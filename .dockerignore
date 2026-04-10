@@ -13,3 +13,7 @@ data/
 .DS_Store
 .pytest_cache/
 test/
+docs/
+.user_token.json
+*.md
+LICENSE

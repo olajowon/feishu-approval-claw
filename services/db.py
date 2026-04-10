@@ -165,9 +165,10 @@ def _conn():
 
 @contextmanager
 def _read_conn():
-    """只读连接：不持有写锁，提升并发读性能。"""
+    """只读连接：不持有写锁，提升并发读性能。启用 query_only 防止误写。"""
     con = sqlite3.connect(DB_FILE, timeout=30)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA query_only = ON")
     try:
         yield con
     finally:
@@ -223,7 +224,8 @@ def _migrate_scripts_from_disk() -> None:
                 continue
             name = fname[:-3]  # 去 .py
             try:
-                code = open(fp, encoding="utf-8").read()
+                with open(fp, encoding="utf-8") as f:
+                    code = f.read()
             except Exception:
                 continue
             with _conn() as con:

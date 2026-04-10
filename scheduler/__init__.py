@@ -1,8 +1,8 @@
 """
 scheduler — 后台定时任务。
 
-任务：每天 12:00 清理创建时间超过 GROUP_TTL_DAYS 天的未解散群组。
-实现：daemon 线程 + 每 30 秒检查一次时间，避免引入额外依赖。
+任务：每 1 小时清理创建时间超过 GROUP_TTL_DAYS 天的未解散群组。
+实现：daemon 线程 + sleep 循环，避免引入额外依赖。
 """
 import logging
 import time
@@ -18,10 +18,10 @@ def token_refresh_loop() -> None:
             if mgr is None:
                 time.sleep(600)
                 continue
-            remaining = mgr._expires_at - time.time()
+            remaining = mgr.expires_in
             if remaining < 1800:  # 不足 30 分钟
                 logger.info("[token-checker] access_token 剩余 %.0f 秒，主动刷新…", remaining)
-                ok = mgr._do_refresh()
+                ok = mgr.try_refresh()
                 if ok:
                     logger.info("[token-checker] token 主动刷新成功")
                 else:
@@ -47,7 +47,7 @@ def cleanup_old_groups() -> None:
         try:
             from services.user_token import get_instance as _get_utm
             mgr = _get_utm()
-            user_token = (mgr._access_token if mgr else "") or ""
+            user_token = (mgr.get_access_token() if mgr else "") or ""
             dissolve_group(chat_id, user_token=user_token)
             dissolve_proc_task_by_chat(chat_id)
             logger.info("[scheduler] 已解散群：%s (chat_id=%s)", group_name, chat_id)

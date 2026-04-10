@@ -228,12 +228,12 @@ def dissolve_group(chat_id: str, user_token: str = "", bot_open_id: str = "") ->
         headers={"Authorization": f"Bearer {user_token}"},
         timeout=10,
     )
-    if r.status_code in (200, 204):
-        logger.info("群已解散(user_token fallback) chat_id=%s", chat_id)
-        return
     try:
         body = r.json()
-        raise RuntimeError(f"解散群失败 [{body.get('code')}]: {body.get('msg')}")
     except (ValueError, AttributeError):
         raise RuntimeError(f"解散群失败 HTTP {r.status_code}: {r.text[:200]}")
+    if body.get("code") == 0:
+        logger.info("群已解散(user_token fallback) chat_id=%s", chat_id)
+        return
+    raise RuntimeError(f"解散群失败 [{body.get('code')}]: {body.get('msg')}")
 
