@@ -1,0 +1,12 @@
+services:
+  feishu-approval-claw:
+    build: .
+    ports:
+      - "${HTTP_PORT:-9999}:9999"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./precheck_scripts:/app/precheck_scripts
+      - ./process_scripts:/app/process_scripts
+    restart: unless-stopped
