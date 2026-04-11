@@ -223,7 +223,8 @@ def _migrate_scripts_from_disk() -> None:
                 continue
             name = fname[:-3]  # 去 .py
             try:
-                code = open(fp, encoding="utf-8").read()
+                with open(fp, encoding="utf-8") as f:
+                    code = f.read()
             except Exception:
                 continue
             with _conn() as con:

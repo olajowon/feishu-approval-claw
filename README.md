@@ -1,7 +1,9 @@
 <p align="center">
   <img src="docs/logo.svg" width="80" height="80" alt="Logo">
 </p>
-<h1 align="center">飞书审批Claw</h1>
+<h1 align="center">飞书审批CLAW</h1>
+
+<p align="center"><a href="README.en.md">English</a></p>
 
 > 通过 WebSocket 长连接实时监听飞书审批事件，自动完成**预检查 → 审批通过 → 建处理群 → @Openclaw Bot自动办理 （或编写低代码脚本处理）**的全链路审批自动化。
 

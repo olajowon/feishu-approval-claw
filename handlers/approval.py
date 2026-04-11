@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 def _send_alert(title: str, content: str) -> None:
     """向 webhook 发送红色告警卡片。"""
+    if not ALERT_WEBHOOK:
+        return
     import requests as _req
     card = {
         "msg_type": "interactive",

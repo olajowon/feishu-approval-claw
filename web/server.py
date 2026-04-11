@@ -30,8 +30,15 @@ from config import (
 )
 
 import services.user_token as _user_token
+from web.i18n import t, js_translations, about_body_zh, about_body_en, scripts_guide_zh, scripts_guide_en
 
 logger = logging.getLogger(__name__)
+
+
+def _get_lang(request: Request) -> str:
+    """从 cookie admin_lang 读取语言，默认 zh。"""
+    lang = request.cookies.get("admin_lang", "zh")
+    return lang if lang in ("zh", "en") else "zh"
 
 # ---------------------------------------------------------------------------
 # OAuth 工具
@@ -152,6 +159,7 @@ _EDITOR_ASSETS = (
 # ── 共用 JS ───────────────────────────────────────────────────────────────
 _ADMIN_JS = (
     "<script>\n"
+    "var _T = window._T || {};\n"
     "function showInfo(text) {\n"
     "  if (!text) return;\n"
     "  var ov = document.createElement(\'div\');\n"
@@ -170,32 +178,30 @@ _ADMIN_JS = (
     "  document.body.appendChild(ov);\n"
     "}\n"
     "async function retryTask(ic, subj) {\n"
-    "  if (!confirm(\'重试处理：\' + (subj||ic) + \'\\n\\n将从上次失败节点继续，确认重试？\')) return;\n"
+    "  if (!confirm(_T['js.retry_proc_title'] + (subj||ic) + _T['js.retry_proc_confirm'])) return;\n"
     "  const r = await fetch(\'/api/tasks/\' + ic + \'/retry\', {method:\'POST\'});\n"
     "  const j = await r.json();\n"
-    "  if (j.ok) { alert(\'✓ 重试成功\'); location.reload(); }\n"
-    "  else { alert(\'✗ 重试失败：\' + j.error); }\n"
+    "  if (j.ok) { alert(_T['js.retry_ok']); location.reload(); }\n"
+    "  else { alert(_T['js.retry_fail'] + j.error); }\n"
     "}\n"
     "async function retryCheckTask(ic, subj) {\n"
-    "  if (!confirm(\'重试预检查：\' + (subj||ic) + \'\\n\\n将重新执行检查脚本并自动审批节点，确认？\')) return;\n"
+    "  if (!confirm(_T['js.retry_check_title'] + (subj||ic) + _T['js.retry_check_confirm'])) return;\n"
     "  const r = await fetch(\'/api/check-tasks/\' + ic + \'/retry\', {method:\'POST\'});\n"
     "  const j = await r.json();\n"
-    "  if (j.ok) { alert(\'✓ 预检查重试成功\'); location.reload(); }\n"
-    "  else { alert(\'✗ 重试失败：\' + j.error); }\n"
+    "  if (j.ok) { alert(_T['js.retry_check_ok']); location.reload(); }\n"
+    "  else { alert(_T['js.retry_fail'] + j.error); }\n"
     "}\n"
     "async function dissolve(chatId, gname) {\n"
-    "  if (!confirm(\'【第一步确认】\\n即将解散群组：\\n\' + gname + \'\\n\\n此操作不可撤销，是否继续？\')) return;\n"
-    "  if (!confirm(\'【第二步确认】\\n再次确认：\\n解散后群组将永久消失，成员会被移出。\\n\\n确认解散？\')) return;\n"
+    "  if (!confirm(_T['js.dissolve_step1'] + gname + _T['js.dissolve_step1_end'])) return;\n"
+    "  if (!confirm(_T['js.dissolve_step2'])) return;\n"
     "  const r = await fetch(\'/api/groups/\' + chatId + \'/dissolve\', {method:\'POST\'});\n"
     "  const j = await r.json();\n"
-    "  if (j.ok) { alert(\'✓ 已成功解散群组\'); location.reload(); }\n"
+    "  if (j.ok) { alert(_T['js.dissolve_ok']); location.reload(); }\n"
     "  else if (j.need_reauth) {\n"
-    "    if (confirm(\'✗ Token 缺少 im:chat 权限，无法通过接口解散。\\n\\n\'\n"
-    "      + \'请点击【确定】重新授权（会在新标签页打开），授权后刷新本页再试。\\n\'\n"
-    "      + \'也可让群主在飞书客户端直接解散群。\')) {\n"
+    "    if (confirm(_T['js.dissolve_no_perm'])) {\n"
     "      window.open(\'/auth\', \'_blank\');\n"
     "    }\n"
-    "  } else { alert(\'✗ 解散失败：\' + j.error); }\n"
+    "  } else { alert(_T['js.dissolve_fail'] + j.error); }\n"
     "}\n"
     "</script>"
 )
@@ -229,14 +235,14 @@ _CHECK_STAGE_LABELS = {
 }
 
 
-def _status_badge(proc_status: str) -> str:
+def _status_badge(proc_status: str, lang: str = "zh") -> str:
     colors = {"success": "#1a7f3c", "error": "#d93025", "pending": "#888"}
-    labels = {"success": "✓ 成功", "error": "✗ 失败", "pending": "⏳ 处理中"}
+    label = t(f"status.{proc_status}", lang) if proc_status else "-"
     return (f'<span style="color:{colors.get(proc_status, "#888")};font-weight:600">'
-            f'{labels.get(proc_status, proc_status or "-")}</span>')
+            f'{label}</span>')
 
 
-def _build_token_html() -> str:
+def _build_token_html(lang: str = "zh") -> str:
     """生成 token 状态 HTML 片段。"""
     import time as _time
     from datetime import datetime as _dt
@@ -248,7 +254,8 @@ def _build_token_html() -> str:
         ac  = "#1a7f3c" if remaining > 600 else "#d93025"
         html = (
             f'<span style="color:{ac}">'
-            f'Access Token 到期: {access_exp}（剩余 {remaining//60} 分钟）</span>'
+            f'{t("token.access_exp", lang)} {access_exp}'
+            f'（{t("token.remaining_min", lang).format(remaining//60)}）</span>'
         )
         rt_exp_val = get_setting("user_refresh_token_expires_at")
         if rt_exp_val:
@@ -258,62 +265,69 @@ def _build_token_html() -> str:
             rc      = "#1a7f3c" if rt_days > 3 else "#d93025"
             html += (
                 f' &nbsp;|&nbsp; <span style="color:{rc}">'
-                f'Refresh Token 过期时间: {rt_str}（剩余 {rt_days} 天）</span>'
+                f'{t("token.refresh_exp", lang)} {rt_str}'
+                f'（{t("token.remaining_days", lang).format(rt_days)}）</span>'
             )
         else:
-            html += (' &nbsp;|&nbsp; <span style="color:#e37400">'
-                     'Refresh Token 到期未知，请 <a href="/auth" target="_blank">重新授权</a> 一次</span>')
+            html += (f' &nbsp;|&nbsp; <span style="color:#e37400">'
+                     f'{t("token.refresh_unknown", lang)} '
+                     f'<a href="/auth" target="_blank">{t("token.reauth_once", lang)}</a> '
+                     f'{t("token.once", lang)}</span>')
     else:
         missing_auth = get_missing_configs(["APP_ID", "APP_SECRET", "REDIRECT_URI"])
         if missing_auth:
-            html = ('<span style="color:#d93025">主应用尚未完成配置：'
+            html = (f'<span style="color:#d93025">{t("token.app_not_configured", lang)}'
                     + ", ".join(missing_auth)
-                    + '。请前往 <a href="/admin/settings">/admin/settings</a> 配置并重启。</span>')
+                    + f' {t("token.go_settings", lang)} '
+                    f'<a href="/admin/settings">/admin/settings</a> '
+                    f'{t("token.config_and_restart", lang)}</span>')
         else:
-            html = ('<span style="color:#d93025">未配置用户 Token，'
-                    '请 <a href="/auth" target="_blank">立即授权</a></span>')
+            html = (f'<span style="color:#d93025">{t("token.not_configured", lang)} '
+                    f'<a href="/auth" target="_blank">{t("token.authorize_now", lang)}</a></span>')
     return html
 
 
-def _build_auth_warning() -> str:
+def _build_auth_warning(lang: str = "zh") -> str:
     """当用户 token 缺失或完全过期（且无法自动刷新）时，返回醒目提示 HTML；否则返回空串。"""
     import time as _time
+    _box = ('<div style="background:#fff1f0;border:2px solid #ff4d4f;border-radius:8px;'
+            'padding:14px 18px;margin-bottom:16px;font-size:13px;line-height:1.8">')
     mgr = _user_token.get_instance()
     if mgr is None:
         return (
-            '<div style="background:#fff1f0;border:2px solid #ff4d4f;border-radius:8px;'
-            'padding:14px 18px;margin-bottom:16px;font-size:13px;line-height:1.8">'
-            '<b style="color:#d93025;font-size:14px">⚠ 尚未完成飞书授权</b><br>'
-            '系统需要一个<b>飞书用户级 token</b> 才能代表真实用户：①发送群消息 ②创建/解散处理群。'
-            '主应用（机器人）身份无法执行这些操作。<br>'
-            '<b>请先在"系统配置"中完成 APP_ID / APP_SECRET / REDIRECT_URI 设置，'
-            '然后访问 <a href="/auth" style="color:#1a73e8">/auth</a> 完成授权。</b>'
+            _box +
+            f'<b style="color:#d93025;font-size:14px">{t("auth_warn.no_auth_title", lang)}</b><br>'
+            f'{t("auth_warn.no_auth_body", lang)}<br>'
+            f'<b>{t("auth_warn.no_auth_action", lang)} '
+            f'<a href="/auth" style="color:#1a73e8">/auth</a> {t("auth_warn.no_auth_action_end", lang)}</b>'
             '</div>'
         )
     if not mgr._access_token:
         return (
-            '<div style="background:#fff1f0;border:2px solid #ff4d4f;border-radius:8px;'
-            'padding:14px 18px;margin-bottom:16px;font-size:13px;line-height:1.8">'
-            '<b style="color:#d93025;font-size:14px">⚠ 未找到用户 Token，功能受限</b><br>'
-            '没有用户 token，系统将以主应用（机器人）身份发送消息，<b>无法创建/解散群组</b>。<br>'
-            '请访问 <a href="/auth" style="color:#1a73e8;font-weight:600">/auth</a> 完成飞书授权，授权后无需重启即生效。'
+            _box +
+            f'<b style="color:#d93025;font-size:14px">{t("auth_warn.no_token_title", lang)}</b><br>'
+            f'{t("auth_warn.no_token_body", lang)}<br>'
+            f'{t("auth_warn.no_token_action", lang)} '
+            f'<a href="/auth" style="color:#1a73e8;font-weight:600">/auth</a> '
+            f'{t("auth_warn.no_token_action_end", lang)}'
             '</div>'
         )
     remaining = mgr._expires_at - _time.time()
     if remaining <= 0 and not mgr._refresh_token:
         return (
-            '<div style="background:#fff1f0;border:2px solid #ff4d4f;border-radius:8px;'
-            'padding:14px 18px;margin-bottom:16px;font-size:13px;line-height:1.8">'
-            '<b style="color:#d93025;font-size:14px">⚠ 用户 Token 已过期且无法自动续期</b><br>'
-            '用户 token 已失效，且没有 refresh_token，系统将无法自动刷新。'
-            '发送消息和群操作可能失败。<br>'
-            '请重新访问 <a href="/auth" style="color:#1a73e8;font-weight:600">/auth</a> 完成授权。'
+            _box +
+            f'<b style="color:#d93025;font-size:14px">{t("auth_warn.expired_title", lang)}</b><br>'
+            f'{t("auth_warn.expired_body", lang)}<br>'
+            f'{t("auth_warn.expired_action", lang)} '
+            f'<a href="/auth" style="color:#1a73e8;font-weight:600">/auth</a> '
+            f'{t("auth_warn.expired_action_end", lang)}'
             '</div>'
         )
     return ""
 
 
-def _page_shell(active: str, token_h: str, body: str, is_admin: bool = True, current_user: str = "") -> str:
+def _page_shell(active: str, token_h: str, body: str, is_admin: bool = True,
+                current_user: str = "", lang: str = "zh") -> str:
     """返回完整 HTML 页面（左侧竖向导航 + 右侧主内容区）。"""
     import html as _html
     _tab_icons = {
@@ -355,15 +369,19 @@ def _page_shell(active: str, token_h: str, body: str, is_admin: bool = True, cur
             '<rect x="1.5" y="3" width="13" height="10" rx="1.5"/>'
             '<path d="M5 8h6M8 6v4" stroke-linejoin="round"/></svg>',
     }
+    _tab_key_to_i18n = {
+        "process-records":  "nav.process_records",
+        "precheck-records": "nav.precheck_records",
+        "process-scripts":  "nav.process_scripts",
+        "precheck-scripts": "nav.precheck_scripts",
+        "envvars":          "nav.envvars",
+        "settings":         "nav.settings",
+        "logs":             "nav.logs",
+        "about":            "nav.about",
+    }
     tabs = [
-        ("process-records",  "处理记录",         "/admin/process-records"),
-        ("precheck-records", "预检查记录",       "/admin/precheck-records"),
-        ("process-scripts",  "处理脚本",         "/admin/process-scripts"),
-        ("precheck-scripts", "预检查脚本",       "/admin/precheck-scripts"),
-        ("envvars",          "环境变量",         "/admin/envvars"),
-        ("settings",         "系统配置",         "/admin/settings"),
-        ("logs",             "操作记录",         "/admin/logs"),
-        ("about",            "系统介绍",         "/admin/about"),
+        (key, t(i18n_key, lang), f"/admin/{key}")
+        for key, i18n_key in _tab_key_to_i18n.items()
     ]
     if not is_admin:
         tabs = [t for t in tabs if t[0] not in ("settings", "logs")]
@@ -371,7 +389,7 @@ def _page_shell(active: str, token_h: str, body: str, is_admin: bool = True, cur
     esc_user = _html.escape(current_user) if current_user else ""
 
     # 获取当前 tab 显示名称
-    _active_label = "管理后台"
+    _active_label = t("shell.admin", lang)
     for key, label, _href in tabs:
         if key == active:
             _active_label = label
@@ -382,8 +400,9 @@ def _page_shell(active: str, token_h: str, body: str, is_admin: bool = True, cur
         + f'>{_tab_icons.get(key,"")}<span>{_html.escape(label)}</span></a>'
         for key, label, href in tabs
     )
+    _js_t_json = json.dumps(js_translations(lang), ensure_ascii=False)
     return (
-        '<!DOCTYPE html>\n<html lang="zh">\n<head>\n'
+        f'<!DOCTYPE html>\n<html lang="{lang}">\n<head>\n'
         '  <meta charset="utf-8">\n'
         '  <meta name="viewport" content="width=device-width,initial-scale=1">\n'
         '  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,'
@@ -392,7 +411,8 @@ def _page_shell(active: str, token_h: str, body: str, is_admin: bool = True, cur
         'fill=%22none%22 transform=%22translate(48,0) scale(-1,1)%22%3E'
         '%3Cpath d=%22M3,3 L22,42%22/%3E%3Cpath d=%22M12,3 L31,42%22/%3E'
         '%3Cpath d=%22M21,3 L35,32 L46,10%22/%3E%3C/g%3E%3C/svg%3E">\n'
-        '  <title>飞书审批Claw管理后台</title>\n'
+        f'  <title>{t("shell.title", lang)}</title>\n'
+        f'  <script>window._T = {_js_t_json};</script>\n'
         + _ADMIN_CSS
         + _ADMIN_JS
         + _EDITOR_ASSETS + '\n'
@@ -406,12 +426,18 @@ def _page_shell(active: str, token_h: str, body: str, is_admin: bool = True, cur
     '<path d="M12,3 L31,42"/>'
     '<path d="M21,3 L35,32 L46,10"/>'
     '</g></svg>'
-    '飞书审批CLAW</div>\n'
+    f'{t("shell.brand", lang)}</div>\n'
         '    <div class="nav-items">\n'
         + nav_items + '\n'
         '    </div>\n'
         '    <div class="nav-bottom">\n'
-        + (f'      <div style="color:rgba(255,255,255,.6);margin-bottom:6px;font-size:11px">👤 {esc_user}</div>\n' if esc_user else '')
+        + '      <div style="display:flex;gap:8px;font-size:12px;margin-top:4px">'
+        + ('<span style="color:#4a9eff;font-weight:600">中文</span>' if lang == "zh"
+           else f'<a href="/api/set-lang?lang=zh&next=/admin/{active}" style="color:rgba(255,255,255,.5);text-decoration:none">中文</a>')
+        + ' <span style="color:rgba(255,255,255,.3)">|</span> '
+        + ('<span style="color:#4a9eff;font-weight:600">EN</span>' if lang == "en"
+           else f'<a href="/api/set-lang?lang=en&next=/admin/{active}" style="color:rgba(255,255,255,.5);text-decoration:none">EN</a>')
+        + '</div>\n'
         + '    </div>\n'
         '  </nav>\n'
         # == 右侧主内容 ==
@@ -420,19 +446,19 @@ def _page_shell(active: str, token_h: str, body: str, is_admin: bool = True, cur
         '      <div class="top-row">\n'
         f'        <h1>{_html.escape(_active_label)}</h1>\n'
         '        <div class="actions">\n'
-        + (f'          <span style="font-size:12px;color:#888">当前用户：<b style="color:#333">{esc_user}</b></span>\n' if esc_user else '')
+        + (f'          <span style="font-size:12px;color:#888">{t("shell.current_user", lang)}<b style="color:#333">{esc_user}</b></span>\n' if esc_user else '')
         + '        </div>\n'
         '      </div>\n'
         + (('      <div class="token-row">\n'
             '        <div class="token-info">' + token_h + '</div>\n'
             '        <div class="token-actions">\n'
-            '          <a href="/health" target="_blank">🩺 健康检查</a>\n'
-            '          <a href="/auth" target="_blank">🔑 重新授权</a>\n'
+            f'          <a href="/health" target="_blank">{t("shell.health", lang)}</a>\n'
+            f'          <a href="/auth" target="_blank">{t("shell.reauth", lang)}</a>\n'
             '        </div>\n'
             '      </div>\n') if is_admin else '')
         + '    </div>\n'
         + '    <div class="main-content">\n'
-        + _build_auth_warning()
+        + _build_auth_warning(lang)
         + body
         + '    </div>\n'
         '  </div>\n'
@@ -459,7 +485,7 @@ def _applicant_cell(r: dict) -> str:
             + '" onclick="showInfo(this.dataset.info)">' + display + '</button>')
 
 
-def _form_cell(fj: str) -> str:
+def _form_cell(fj: str, lang: str = "zh") -> str:
     """将 form_json 字符串转成表单弹窗按钮 HTML，无内容时返回 '-'。"""
     import json as _json
     if not fj or fj in ("{}", "null"):
@@ -469,12 +495,13 @@ def _form_cell(fj: str) -> str:
     except Exception:
         pretty = _html_mod.escape(fj)
     return ('<button class="btn-info" data-info="' + pretty
-            + '" onclick="showInfo(this.dataset.info)">表单</button>')
+            + f'" onclick="showInfo(this.dataset.info)">{t("proc.form_btn", lang)}</button>')
 
 
 def _render_proc_page(page: int = 1, page_size: int = 20,
                       name: str = "", subject: str = "",
-                      is_admin: bool = True, current_user: str = "") -> str:
+                      is_admin: bool = True, current_user: str = "",
+                      lang: str = "zh") -> str:
     """渲染处理任务记录页（/admin/process-records）。"""
     import urllib.parse as _up
     from services.db import list_proc_tasks_paged, count_proc_tasks
@@ -496,9 +523,9 @@ def _render_proc_page(page: int = 1, page_size: int = 20,
                 f'padding:4px 8px;border:1px solid #c9d1e0;border-radius:4px">{lbl}</a>')
 
     pagination = (
-        f'{_plink(page-1, "◄ 上一页")}'
-        f'<span style="margin:0 12px;color:#555">第 {page} / {total_pages} 页（共 {total} 条）</span>'
-        f'{_plink(page+1, "下一页 ►")}'
+        f'{_plink(page-1, t("proc.prev", lang))}'
+        f'<span style="margin:0 12px;color:#555">{t("proc.page_info", lang).format(page, total_pages, total)}</span>'
+        f'{_plink(page+1, t("proc.next", lang))}'
     )
 
     def _esc(s): return s.replace('"', '&quot;').replace('<', '&lt;')
@@ -506,23 +533,23 @@ def _render_proc_page(page: int = 1, page_size: int = 20,
     _btn_blue = 'style="background:#1a73e8;color:#fff;border:none;padding:0 18px;height:36px;border-radius:6px;cursor:pointer;font-size:14px"'
     _btn_gray = 'style="background:#fff;color:#555;border:1px solid #c9d1e0;padding:0 14px;height:36px;border-radius:6px;cursor:pointer;font-size:14px;text-decoration:none;display:inline-flex;align-items:center"'
     _ps_opts  = ''.join(
-        f'<option value="{n}"' + (' selected' if n == page_size else '') + f'>{n} 条/页</option>'
+        f'<option value="{n}"' + (' selected' if n == page_size else '') + f'>{n} {t("proc.per_page", lang)}</option>'
         for n in [10, 20, 50, 100]
     )
     search_form = (
         '<form method="get" action="/admin/process-records" '
         'style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">'
-        f'<input name="name" placeholder="申请人" value="{_esc(name)}" {_inp} style="width:140px;border:1px solid #c9d1e0;border-radius:6px;padding:6px 10px;font-size:14px;height:36px">'
-        f'<input name="subject" placeholder="申请事项" value="{_esc(subject)}" {_inp} style="width:180px;border:1px solid #c9d1e0;border-radius:6px;padding:6px 10px;font-size:14px;height:36px">'
+        f'<input name="name" placeholder="{t("proc.applicant", lang)}" value="{_esc(name)}" {_inp} style="width:140px;border:1px solid #c9d1e0;border-radius:6px;padding:6px 10px;font-size:14px;height:36px">'
+        f'<input name="subject" placeholder="{t("proc.subject", lang)}" value="{_esc(subject)}" {_inp} style="width:180px;border:1px solid #c9d1e0;border-radius:6px;padding:6px 10px;font-size:14px;height:36px">'
         f'<select name="page_size" onchange="this.form.submit()" style="border:1px solid #c9d1e0;border-radius:6px;padding:0 8px;font-size:14px;height:36px;cursor:pointer">{_ps_opts}</select>'
-        f'<button type="submit" {_btn_blue}>搜索</button>'
-        f'<a href="/admin/process-records" {_btn_gray}>重置</a>'
-        f'<button type="button" onclick="location.reload()" {_btn_gray}>刷新</button>'
+        f'<button type="submit" {_btn_blue}>{t("proc.search", lang)}</button>'
+        f'<a href="/admin/process-records" {_btn_gray}>{t("proc.reset", lang)}</a>'
+        f'<button type="button" onclick="location.reload()" {_btn_gray}>{t("proc.refresh", lang)}</button>'
         '</form>'
     )
 
     if not records:
-        rows_html = '<tr><td colspan="14" style="text-align:center;color:#888;padding:24px">暂无记录</td></tr>'
+        rows_html = f'<tr><td colspan="14" style="text-align:center;color:#888;padding:24px">{t("proc.no_records", lang)}</td></tr>'
     else:
         rows = []
         for r in records:
@@ -533,21 +560,21 @@ def _render_proc_page(page: int = 1, page_size: int = 20,
             extra_info = _html_mod.escape(r.get("extra_info") or "")
             info_cell = (
                 '<button class="btn-info" data-info="' + extra_info
-                + '" onclick="showInfo(this.dataset.info)">⚠ 查看</button>'
+                + f'" onclick="showInfo(this.dataset.info)">{t("proc.view", lang)}</button>'
                 if extra_info else "-"
             )
             aname = r.get("approval_name") or "-"
-            fc    = _form_cell(r.get("form_json") or "")
+            fc    = _form_cell(r.get("form_json") or "", lang=lang)
             _jsattr = lambda s: _html_mod.escape(json.dumps(s, ensure_ascii=False))
             icode = r["instance_code"]
             if ps == "error":
                 subj   = r.get("subject") or ""
-                action = f'<button onclick="retryTask({_jsattr(icode)},{_jsattr(subj)})" class="btn-orange">重试</button>'
+                action = f'<button onclick="retryTask({_jsattr(icode)},{_jsattr(subj)})" class="btn-orange">{t("proc.retry", lang)}</button>'
             elif proc_type == "group" and ps == "success" and not r.get("is_dissolved"):
                 gname  = r.get("group_name") or chat_id
-                action = f'<button onclick="dissolve({_jsattr(chat_id)},{_jsattr(gname)})" class="btn-red">解散</button>'
+                action = f'<button onclick="dissolve({_jsattr(chat_id)},{_jsattr(gname)})" class="btn-red">{t("proc.dissolve", lang)}</button>'
             elif r.get("is_dissolved"):
-                action = '<span style="color:#aaa">已解散</span>'
+                action = f'<span style="color:#aaa">{t("proc.dissolved", lang)}</span>'
             else:
                 action = '<span style="color:#aaa">-</span>'
             rows.append(
@@ -558,10 +585,10 @@ def _render_proc_page(page: int = 1, page_size: int = 20,
                 f"<td>{r.get('subject') or '-'}</td>"
                 f"<td>{_applicant_cell(r)}</td>"
                 f"<td>{fc}</td>"
-                f"<td>{_PROC_TYPE_LABELS.get(proc_type, proc_type or '-')}</td>"
+                f"<td>{t('proc_type.' + proc_type, lang) if proc_type else '-'}</td>"
                 f"<td>{r.get('group_name') or '-'}</td>"
-                f"<td>{_STAGE_LABELS.get(stage, stage or '-')}</td>"
-                f"<td>{_status_badge(ps)}</td>"
+                f"<td>{t('stage.' + stage, lang) if stage else '-'}</td>"
+                f"<td>{_status_badge(ps, lang)}</td>"
                 f"<td>{info_cell}</td>"
                 f"<td>{r.get('created_at') or '-'}</td>"
                 f"<td>{action}</td>"
@@ -573,20 +600,26 @@ def _render_proc_page(page: int = 1, page_size: int = 20,
         search_form
         + '\n<div class="pager">' + pagination + '</div>\n'
         '<table>\n<thead><tr>\n'
-        '  <th>#</th><th>实例 Code</th><th>审批名称</th><th>申请事项</th><th>申请人</th>\n'
-        '  <th>表单</th><th>处理方式</th><th>群名</th><th>当前阶段</th><th>处理状态</th>\n'
-        '  <th>处理信息</th><th>创建时间</th><th>操作</th>\n'
+        f'  <th>{t("proc.th_id", lang)}</th><th>{t("proc.th_code", lang)}</th>'
+        f'<th>{t("proc.th_approval", lang)}</th><th>{t("proc.th_subject", lang)}</th>'
+        f'<th>{t("proc.th_applicant", lang)}</th>\n'
+        f'  <th>{t("proc.th_form", lang)}</th><th>{t("proc.th_type", lang)}</th>'
+        f'<th>{t("proc.th_group", lang)}</th><th>{t("proc.th_stage", lang)}</th>'
+        f'<th>{t("proc.th_status", lang)}</th>\n'
+        f'  <th>{t("proc.th_info", lang)}</th><th>{t("proc.th_time", lang)}</th>'
+        f'<th>{t("proc.th_action", lang)}</th>\n'
         '</tr></thead>\n'
         '<tbody>' + rows_html + '</tbody>\n'
         '</table>\n'
         '<div class="pager" style="margin-top:12px">' + pagination + '</div>\n'
     )
-    return _page_shell("process-records", _build_token_html(), body, is_admin=is_admin, current_user=current_user)
+    return _page_shell("process-records", _build_token_html(lang), body, is_admin=is_admin, current_user=current_user, lang=lang)
 
 
 def _render_check_page(cpage: int = 1, cpage_size: int = 20,
                        csubject: str = "", cname: str = "",
-                       is_admin: bool = True, current_user: str = "") -> str:
+                       is_admin: bool = True, current_user: str = "",
+                       lang: str = "zh") -> str:
     """渲染预检查记录页（/admin/precheck-records）。"""
     import urllib.parse as _up
     from services.db import list_check_tasks_paged, count_check_tasks
@@ -607,9 +640,9 @@ def _render_check_page(cpage: int = 1, cpage_size: int = 20,
                 f'padding:4px 8px;border:1px solid #c9d1e0;border-radius:4px">{lbl}</a>')
 
     c_pagination = (
-        f'{_cplink(cpage-1, "◄ 上一页")}'
-        f'<span style="margin:0 12px;color:#555">第 {cpage} / {c_total_pages} 页（共 {c_total} 条）</span>'
-        f'{_cplink(cpage+1, "下一页 ►")}'
+        f'{_cplink(cpage-1, t("check.prev", lang))}'
+        f'<span style="margin:0 12px;color:#555">{t("check.page_info", lang).format(cpage, c_total_pages, c_total)}</span>'
+        f'{_cplink(cpage+1, t("check.next", lang))}'
     )
 
     def _esc(s): return s.replace('"', '&quot;').replace('<', '&lt;')
@@ -617,48 +650,51 @@ def _render_check_page(cpage: int = 1, cpage_size: int = 20,
     _btn_blue = 'style="background:#1a73e8;color:#fff;border:none;padding:0 18px;height:36px;border-radius:6px;cursor:pointer;font-size:14px"'
     _btn_gray = 'style="background:#fff;color:#555;border:1px solid #c9d1e0;padding:0 14px;height:36px;border-radius:6px;cursor:pointer;font-size:14px;text-decoration:none;display:inline-flex;align-items:center"'
     _cps_opts = ''.join(
-        f'<option value="{n}"' + (' selected' if n == cpage_size else '') + f'>{n} 条/页</option>'
+        f'<option value="{n}"' + (' selected' if n == cpage_size else '') + f'>{n} {t("check.per_page", lang)}</option>'
         for n in [10, 20, 50, 100]
     )
     c_search_form = (
         '<form method="get" action="/admin/precheck-records" '
         'style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">'
-        f'<input name="cname" placeholder="申请人" value="{_esc(cname)}" {_cinp} style="width:140px;border:1px solid #c9d1e0;border-radius:6px;padding:6px 10px;font-size:14px;height:36px">'
-        f'<input name="csubject" placeholder="申请事项" value="{_esc(csubject)}" {_cinp} style="width:180px;border:1px solid #c9d1e0;border-radius:6px;padding:6px 10px;font-size:14px;height:36px">'
+        f'<input name="cname" placeholder="{t("check.applicant", lang)}" value="{_esc(cname)}" {_cinp} style="width:140px;border:1px solid #c9d1e0;border-radius:6px;padding:6px 10px;font-size:14px;height:36px">'
+        f'<input name="csubject" placeholder="{t("check.subject", lang)}" value="{_esc(csubject)}" {_cinp} style="width:180px;border:1px solid #c9d1e0;border-radius:6px;padding:6px 10px;font-size:14px;height:36px">'
         f'<select name="cpage_size" onchange="this.form.submit()" style="border:1px solid #c9d1e0;border-radius:6px;padding:0 8px;font-size:14px;height:36px;cursor:pointer">{_cps_opts}</select>'
-        f'<button type="submit" {_btn_blue}>搜索</button>'
-        f'<a href="/admin/precheck-records" {_btn_gray}>重置</a>'
-        f'<button type="button" onclick="location.reload()" {_btn_gray}>刷新</button>'
+        f'<button type="submit" {_btn_blue}>{t("check.search", lang)}</button>'
+        f'<a href="/admin/precheck-records" {_btn_gray}>{t("check.reset", lang)}</a>'
+        f'<button type="button" onclick="location.reload()" {_btn_gray}>{t("check.refresh", lang)}</button>'
         '</form>'
     )
 
     if not c_records:
-        rows_html = '<tr><td colspan="13" style="text-align:center;color:#888;padding:24px">暂无记录</td></tr>'
+        rows_html = f'<tr><td colspan="13" style="text-align:center;color:#888;padding:24px">{t("check.no_records", lang)}</td></tr>'
     else:
         rows = []
         for r in c_records:
             cs = r.get("check_status", "")
-            lbl, clr = _CHECK_STATUS_LABELS.get(cs, (cs or "-", "#888"))
+            _cs_colors = {"pending": "#888", "passed": "#1a7f3c", "rejected": "#d93025",
+                          "skipped": "#888", "error": "#e37400"}
+            clr = _cs_colors.get(cs, "#888")
+            lbl = t(f"check_status.{cs}", lang) if cs else "-"
             status_cell = f'<span style="color:{clr};font-weight:600">{lbl}</span>'
             reason = _html_mod.escape(r.get("check_reason") or "")
             reason_cell = (
                 '<button class="btn-info" data-info="' + reason
-                + '" onclick="showInfo(this.dataset.info)">查看</button>'
+                + f'" onclick="showInfo(this.dataset.info)">{t("check.view", lang)}</button>'
                 if reason else "-"
             )
             extra = _html_mod.escape(r.get("extra_info") or "")
             extra_cell = (
                 '<button class="btn-info" data-info="' + extra
-                + '" onclick="showInfo(this.dataset.info)">⚠ 查看</button>'
+                + f'" onclick="showInfo(this.dataset.info)">{t("check.view_error", lang)}</button>'
                 if extra else "-"
             )
             aname = r.get("approval_name") or "-"
-            fc    = _form_cell(r.get("form_json") or "")
+            fc    = _form_cell(r.get("form_json") or "", lang=lang)
             _jsattr = lambda s: _html_mod.escape(json.dumps(s, ensure_ascii=False))
             icode = r["instance_code"]
             subj  = r.get("subject") or ""
             action = (
-                f'<button onclick="retryCheckTask({_jsattr(icode)},{_jsattr(subj)})" class="btn-orange">重试</button>'
+                f'<button onclick="retryCheckTask({_jsattr(icode)},{_jsattr(subj)})" class="btn-orange">{t("check.retry", lang)}</button>'
                 if cs == "error" else '<span style="color:#aaa">-</span>'
             )
             rows.append(
@@ -670,7 +706,7 @@ def _render_check_page(cpage: int = 1, cpage_size: int = 20,
                 f"<td>{fc}</td>"
                 f"<td>{_applicant_cell(r)}</td>"
                 f"<td style='font-size:11px;color:#666'>{r.get('task_id') or '-'}</td>"
-                f"<td>{_CHECK_STAGE_LABELS.get(r.get('stage',''), r.get('stage','-'))}</td>"
+                f"<td>{t('check_stage.' + r.get('stage',''), lang) if r.get('stage') else '-'}</td>"
                 f"<td>{status_cell}</td>"
                 f"<td>{reason_cell}</td>"
                 f"<td>{extra_cell}</td>"
@@ -684,22 +720,26 @@ def _render_check_page(cpage: int = 1, cpage_size: int = 20,
         c_search_form
         + '\n<div class="pager">' + c_pagination + '</div>\n'
         '<table>\n<thead><tr>\n'
-        '  <th>#</th><th>实例 Code</th><th>审批名称</th><th>申请事项</th><th>表单</th><th>申请人</th>\n'
-        '  <th>节点 Task ID</th><th>当前阶段</th><th>检查状态</th>\n'
-        '  <th>检查原因</th><th>错误信息</th><th>创建时间</th><th>操作</th>\n'
+        f'  <th>{t("check.th_id", lang)}</th><th>{t("check.th_code", lang)}</th>'
+        f'<th>{t("check.th_approval", lang)}</th><th>{t("check.th_subject", lang)}</th>'
+        f'<th>{t("check.th_form", lang)}</th><th>{t("check.th_applicant", lang)}</th>\n'
+        f'  <th>{t("check.th_task_id", lang)}</th><th>{t("check.th_stage", lang)}</th>'
+        f'<th>{t("check.th_status", lang)}</th>\n'
+        f'  <th>{t("check.th_reason", lang)}</th><th>{t("check.th_error", lang)}</th>'
+        f'<th>{t("check.th_time", lang)}</th><th>{t("check.th_action", lang)}</th>\n'
         '</tr></thead>\n'
         '<tbody>' + rows_html + '</tbody>\n'
         '</table>\n'
         '<div class="pager" style="margin-top:12px">' + c_pagination + '</div>\n'
     )
-    return _page_shell("precheck-records", _build_token_html(), body, is_admin=is_admin, current_user=current_user)
+    return _page_shell("precheck-records", _build_token_html(lang), body, is_admin=is_admin, current_user=current_user, lang=lang)
 
 
 # ---------------------------------------------------------------------------
 # 系统配置页
 # ---------------------------------------------------------------------------
 
-def _render_settings_page(current_user: str = "") -> str:
+def _render_settings_page(current_user: str = "", lang: str = "zh") -> str:
     """渲染系统配置页（/admin/settings）。"""
     from config import CONFIG_META
     from services.db import get_setting
@@ -710,30 +750,32 @@ def _render_settings_page(current_user: str = "") -> str:
 
     # 分组标题映射: key -> 所属分组
     _SECTION_OF = {
-        'APP_ID': '飞书应用配置', 'APP_SECRET': '飞书应用配置',
-        'REDIRECT_URI': '飞书应用配置', 'FEISHU_HOST': '飞书应用配置',
-        'APPROVAL_CODES': '飞书审批配置', 'PRE_CHECK_NODE_NAME': '飞书审批配置',
-        'WORKER_BOT_APP_ID': '飞书群配置', 'WORKER_BOT_APP_SECRET': '飞书群配置',
-        'WORKER_USER_IDS': '飞书群配置', 'WORKER_ADMIN_ID': '飞书群配置',
-        'WORKER_BOT_ADMIN_ID': '飞书群配置',
-        'GROUP_TTL_DAYS': '飞书群配置',
-        'ALERT_WEBHOOK': '运维配置',
+        'APP_ID': 'feishu_app', 'APP_SECRET': 'feishu_app',
+        'REDIRECT_URI': 'feishu_app', 'FEISHU_HOST': 'feishu_app',
+        'APPROVAL_CODES': 'feishu_approval', 'PRE_CHECK_NODE_NAME': 'feishu_approval',
+        'WORKER_BOT_APP_ID': 'feishu_group', 'WORKER_BOT_APP_SECRET': 'feishu_group',
+        'WORKER_USER_IDS': 'feishu_group', 'WORKER_ADMIN_ID': 'feishu_group',
+        'WORKER_BOT_ADMIN_ID': 'feishu_group',
+        'GROUP_TTL_DAYS': 'feishu_group',
+        'ALERT_WEBHOOK': 'ops',
     }
     rows = []
     _last_section = None
-    for key, desc, is_secret in CONFIG_META:
-        section = _SECTION_OF.get(key, '')
-        if section and section != _last_section:
+    for key, desc_zh, desc_en, is_secret in CONFIG_META:
+        desc = desc_en if lang == "en" else desc_zh
+        section_key = _SECTION_OF.get(key, '')
+        section = t(f"settings.section.{section_key}", lang) if section_key else ''
+        if section_key and section_key != _last_section:
             rows.append(
                 f'<tr><td colspan="4" style="background:#f0f4ff;font-weight:700;'
                 f'font-size:12px;color:#1a73e8;padding:8px 12px;border-top:2px solid #dce8ff">'
                 f'{section}</td></tr>'
             )
-            _last_section = section
+            _last_section = section_key
         db_val = get_setting(f"config:{key}")
         env_val = _os.environ.get(key, "")
         current = db_val if db_val is not None else env_val
-        source = "数据库" if db_val is not None else (".env" if env_val else "默认")
+        source = t("settings.source_db", lang) if db_val is not None else (t("settings.source_env", lang) if env_val else t("settings.source_default", lang))
         esc_val = current.replace('"', "&quot;").replace("<", "&lt;")
         if key in _TEXTAREA_KEYS:
             field_html = (
@@ -741,7 +783,7 @@ def _render_settings_page(current_user: str = "") -> str:
                 f'style="width:100%;border:1px solid #c9d1e0;border-radius:4px;'
                 f'padding:4px 8px;font-size:13px;font-family:monospace;resize:vertical">'
                 f'{esc_val}</textarea>'
-                f'<div style="font-size:11px;color:#aaa;margin-top:2px">多个值用英文逗号分隔</div>'
+                f'<div style="font-size:11px;color:#aaa;margin-top:2px">{t("settings.multi_hint", lang)}</div>'
             )
         elif is_secret:
             # 显示脱敏掩码；value 仍存真实值，type=password 让浏览器掩码显示
@@ -771,9 +813,8 @@ def _render_settings_page(current_user: str = "") -> str:
     if missing_bootstrap:
         notice_html = (
             '<div class="notice-warn">'
-            '当前缺少主应用启动配置：<b>' + ", ".join(missing_bootstrap) + '</b>。'
-            '服务现在仍可启动并打开管理后台，但不会连接飞书、不会接收审批事件，/auth 也暂不可用。'
-            '请先在本页补齐配置，再点击“保存并重启”。'
+            f'{t("settings.missing_notice", lang)}<b>' + ", ".join(missing_bootstrap) + '</b>'
+            f'{t("settings.missing_notice2", lang)}'
             '</div>'
         )
 
@@ -781,17 +822,18 @@ def _render_settings_page(current_user: str = "") -> str:
         notice_html +
         '<form id="settingsForm" style="margin-bottom:20px">'
         '<table><thead><tr>'
-        '<th style="width:160px">配置键</th><th>说明</th><th style="width:420px">配置值</th><th style="width:60px">来源</th>'
+        f'<th style="width:160px">{t("settings.th_key", lang)}</th><th>{t("settings.th_desc", lang)}</th>'
+        f'<th style="width:420px">{t("settings.th_value", lang)}</th><th style="width:60px">{t("settings.th_source", lang)}</th>'
         '</tr></thead><tbody>'
         + "\n".join(rows)
         + '</tbody></table>'
         '<div style="margin-top:16px;display:flex;gap:12px">'
         '<button type="button" onclick="saveSettings()" '
         'style="background:#1a73e8;color:#fff;border:none;padding:8px 24px;border-radius:6px;cursor:pointer;font-size:14px">'
-        '保存配置</button>'
+        f'{t("settings.save", lang)}</button>'
         '<button type="button" onclick="saveAndRestart()" '
         'style="background:#e37400;color:#fff;border:none;padding:8px 24px;border-radius:6px;cursor:pointer;font-size:14px">'
-        '保存并重启</button>'
+        f'{t("settings.save_restart", lang)}</button>'
         '</div>'
         '</form>'
         '<script>\n'
@@ -808,28 +850,28 @@ def _render_settings_page(current_user: str = "") -> str:
         '  const data = _collectSettings();\n'
         '  const r = await fetch("/api/settings/save", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data)});\n'
         '  const j = await r.json();\n'
-        '  if(j.ok) alert("配置已保存"); else alert("保存失败: " + j.error);\n'
+        '  if(j.ok) alert(_T["js.config_saved"]); else alert(_T["js.save_fail"] + j.error);\n'
         '}\n'
         'async function saveAndRestart() {\n'
         '  const data = _collectSettings();\n'
         '  const r = await fetch("/api/settings/save", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data)});\n'
         '  const j = await r.json();\n'
-        '  if(!j.ok){ alert("保存失败: " + j.error); return; }\n'
-        '  if(!confirm("配置已保存。确认重启服务？")) return;\n'
+        '  if(!j.ok){ alert(_T["js.save_fail"] + j.error); return; }\n'
+        '  if(!confirm(_T["js.confirm_restart"])) return;\n'
         '  fetch("/api/restart", {method:"POST"}).catch(()=>{});\n'
-        '  alert("服务正在重启，请等待几秒后刷新页面……");\n'
+        '  alert(_T["js.restarting"]);\n'
         '  setTimeout(()=>location.reload(), 3000);\n'
         '}\n'
         '</script>'
     )
-    return _page_shell("settings", _build_token_html(), body, current_user=current_user)
+    return _page_shell("settings", _build_token_html(lang), body, current_user=current_user, lang=lang)
 
 
 # ---------------------------------------------------------------------------
 # 环境变量管理页
 # ---------------------------------------------------------------------------
 
-def _render_envvars_page(is_admin: bool = True, current_user: str = "") -> str:
+def _render_envvars_page(is_admin: bool = True, current_user: str = "", lang: str = "zh") -> str:
     """渲染脚本环境变量管理页（/admin/envvars）。"""
     from services.db import list_script_envvars
 
@@ -840,7 +882,7 @@ def _render_envvars_page(is_admin: bool = True, current_user: str = "") -> str:
 
     def _mask(v: str) -> str:
         if not v:
-            return '<span style="color:#ccc">（空）</span>'
+            return f'<span style="color:#ccc">{t("envvars.empty_val", lang)}</span>'
         visible = v[:2] if len(v) > 4 else v[:1]
         return _esc(visible) + '•' * min(len(v) - len(visible), 12)
 
@@ -855,61 +897,60 @@ def _render_envvars_page(is_admin: bool = True, current_user: str = "") -> str:
                 f'<td style="font-family:monospace;color:#555">{_mask(r["value"])}</td>'
                 f'<td style="font-size:12px;color:#888">{r.get("updated_at","")}</td>'
                 f'<td style="white-space:nowrap">'
-                f'<button class="btn-orange" onclick="editEnvvar({rk},{rd})">编辑</button> '
-                f'<button class="btn-red" onclick="delEnvvar({rk})">删除</button>'
+                f'<button class="btn-orange" onclick="editEnvvar({rk},{rd})">{t("envvars.edit", lang)}</button> '
+                f'<button class="btn-red" onclick="delEnvvar({rk})">{t("envvars.delete", lang)}</button>'
                 f'</td></tr>'
             )
         rows_html = "\n".join(_ev_row(r) for r in records)
     else:
-        rows_html = '<tr><td colspan="5" style="text-align:center;color:#888;padding:24px">暂无环境变量，点击「新增」添加</td></tr>'
+        rows_html = f'<tr><td colspan="5" style="text-align:center;color:#888;padding:24px">{t("envvars.empty", lang)}</td></tr>'
 
     body = (
         '<div style="background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;'
         'padding:12px 16px;font-size:13px;color:#7d5a00;margin-bottom:16px;line-height:1.8">'
-        '在此配置的变量会注入到脚本的 <code>ENV</code> 字典中，脚本通过 <code>ENV.get("KEY")</code> 读取。'
-        ''
+        f'{t("envvars.hint", lang)}'
         '</div>'
 
         '<div style="margin-bottom:12px">'
         '<button onclick="editEnvvar(\'\',\'\')" '
         'style="background:#1a73e8;color:#fff;border:none;padding:7px 20px;border-radius:6px;cursor:pointer;font-size:14px">'
-        '+ 新增环境变量</button>'
+        f'{t("envvars.add", lang)}</button>'
         '</div>'
 
         '<table style="table-layout:fixed">\n<thead><tr>'
-        '<th style="width:200px">变量名</th>'
-        '<th style="width:220px">说明</th>'
-        '<th style="width:200px">值</th>'
-        '<th style="width:160px">更新时间</th>'
-        '<th style="width:110px">操作</th>'
+        f'<th style="width:200px">{t("envvars.th_key", lang)}</th>'
+        f'<th style="width:220px">{t("envvars.th_desc", lang)}</th>'
+        f'<th style="width:200px">{t("envvars.th_value", lang)}</th>'
+        f'<th style="width:160px">{t("envvars.th_time", lang)}</th>'
+        f'<th style="width:110px">{t("envvars.th_action", lang)}</th>'
         '</tr></thead>\n'
         '<tbody>' + rows_html + '</tbody>\n</table>\n'
 
         # ── 弹窗 ──────────────────────────────────────────────────────────────
         '<div id="evModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:999;align-items:center;justify-content:center">'
         '  <div style="background:#fff;border-radius:10px;padding:28px 32px;min-width:420px;max-width:560px;box-shadow:0 8px 32px rgba(0,0,0,.18)">'
-        '    <h3 id="evTitle" style="margin:0 0 18px;font-size:16px;color:#1d2129">新增环境变量</h3>'
+        f'    <h3 id="evTitle" style="margin:0 0 18px;font-size:16px;color:#1d2129">{t("envvars.modal_add", lang)}</h3>'
         '    <div id="evKeySection" style="margin-bottom:12px">'
-        '      <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">变量名 <span style="color:#d93025">*</span></label>'
-        '      <input id="evKey" type="text" placeholder="如 VOLCENGINE_AK" '
+        f'      <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">{t("envvars.label_key", lang)} <span style="color:#d93025">*</span></label>'
+        f'      <input id="evKey" type="text" placeholder="{t("envvars.key_placeholder", lang)}" '
         '        style="width:100%;box-sizing:border-box;border:1px solid #c9d1e0;border-radius:6px;padding:7px 10px;font-size:14px;font-family:monospace">'
         '    </div>'
         '    <div id="evDescSection" style="margin-bottom:12px">'
-        '      <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">说明</label>'
-        '      <input id="evDesc" type="text" placeholder="简要说明此变量用途" '
+        f'      <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">{t("envvars.label_desc", lang)}</label>'
+        f'      <input id="evDesc" type="text" placeholder="{t("envvars.desc_placeholder", lang)}" '
         '        style="width:100%;box-sizing:border-box;border:1px solid #c9d1e0;border-radius:6px;padding:7px 10px;font-size:14px">'
         '    </div>'
         '    <div id="evEditLabel" style="display:none;margin-bottom:12px;padding:8px 12px;background:#f5f7ff;border-radius:6px;font-size:13px;color:#1d2129">'
-        '      <span style="color:#888">变量：</span><span id="evEditLabelKey" style="font-family:monospace;font-weight:600"></span>'
+        f'      <span style="color:#888">{t("envvars.var_label", lang)}</span><span id="evEditLabelKey" style="font-family:monospace;font-weight:600"></span>'
         '    </div>'
         '    <div style="margin-bottom:20px">'
-        '      <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">值 <span style="color:#d93025">*</span></label>'
-        '      <input id="evVal" type="text" placeholder="新建时输入实际值；编辑时留空则不修改" autocomplete="off" '
+        f'      <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">{t("envvars.label_value", lang)} <span style="color:#d93025">*</span></label>'
+        f'      <input id="evVal" type="text" placeholder="{t("envvars.val_placeholder_new", lang)}" autocomplete="off" '
         '        style="width:100%;box-sizing:border-box;border:1px solid #c9d1e0;border-radius:6px;padding:7px 10px;font-size:14px;font-family:monospace">'
         '    </div>'
         '    <div style="display:flex;gap:10px;justify-content:flex-end">'
-        '      <button onclick="closeEvModal()" style="padding:7px 20px;border:1px solid #c9d1e0;border-radius:6px;cursor:pointer;background:#fff">取消</button>'
-        '      <button onclick="saveEnvvar()" style="padding:7px 20px;background:#1a73e8;color:#fff;border:none;border-radius:6px;cursor:pointer">保存</button>'
+        f'      <button onclick="closeEvModal()" style="padding:7px 20px;border:1px solid #c9d1e0;border-radius:6px;cursor:pointer;background:#fff">{t("envvars.cancel", lang)}</button>'
+        f'      <button onclick="saveEnvvar()" style="padding:7px 20px;background:#1a73e8;color:#fff;border:none;border-radius:6px;cursor:pointer">{t("envvars.save", lang)}</button>'
         '    </div>'
         '  </div>'
         '</div>'
@@ -918,7 +959,7 @@ def _render_envvars_page(is_admin: bool = True, current_user: str = "") -> str:
         'var _evOrigKey="";\n'
         'function editEnvvar(k,d){\n'
         '  _evOrigKey=k;\n'
-        '  document.getElementById("evTitle").textContent=k?"编辑环境变量":"新增环境变量";\n'
+        '  document.getElementById("evTitle").textContent=k?_T["js.ev_modal_edit"]||"Edit Variable":_T["js.ev_modal_add"]||"Add Variable";\n'
         '  var editing=!!k;\n'
         '  document.getElementById("evKeySection").style.display=editing?"none":"block";\n'
         '  document.getElementById("evDescSection").style.display=editing?"none":"block";\n'
@@ -927,7 +968,7 @@ def _render_envvars_page(is_admin: bool = True, current_user: str = "") -> str:
         '  document.getElementById("evKey").value=k;\n'
         '  document.getElementById("evDesc").value=d;\n'
         '  document.getElementById("evVal").value="";\n'
-        '  document.getElementById("evVal").placeholder=k?"输入新值（留空则不修改）":"输入实际值";\n'
+        '  document.getElementById("evVal").placeholder=k?(_T["js.ev_val_ph_edit"]||""):(_T["js.ev_val_ph_new"]||"");\n'
         '  document.getElementById("evVal").focus();\n'
         '  var m=document.getElementById("evModal");\n'
         '  m.style.display="flex";\n'
@@ -939,34 +980,44 @@ def _render_envvars_page(is_admin: bool = True, current_user: str = "") -> str:
         '  var k=document.getElementById("evKey").value.trim();\n'
         '  var d=document.getElementById("evDesc").value.trim();\n'
         '  var v=document.getElementById("evVal").value;\n'
-        '  if(!k){alert("变量名不能为空");return;}\n'
-        '  if(!_evOrigKey && !v){alert("新增时值不能为空");return;}\n'
+        '  if(!k){alert(_T["js.ev_key_empty"]);return;}\n'
+        '  if(!_evOrigKey && !v){alert(_T["js.ev_val_empty"]);return;}\n'
         '  var payload={key:k,desc:d};\n'
         '  if(v) payload.value=v;\n'
         '  var endpoint=_evOrigKey?"/api/envvars/edit":"/api/envvars/create";\n'
         '  var r=await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});\n'
         '  var j=await r.json();\n'
-        '  if(j.ok){closeEvModal();location.reload();}else{alert("保存失败: "+j.error);}\n'
+        '  if(j.ok){closeEvModal();location.reload();}else{alert(_T["js.ev_save_fail"]+j.error);}\n'
         '}\n'
         'async function delEnvvar(k){\n'
-        '  if(!confirm("确认删除环境变量 "+k+" ？")) return;\n'
+        '  if(!confirm(_T["js.ev_del_confirm"]+k+_T["js.ev_del_confirm_end"])) return;\n'
         '  var r=await fetch("/api/envvars/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key:k})});\n'
         '  var j=await r.json();\n'
-        '  if(j.ok){location.reload();}else{alert("删除失败: "+j.error);}\n'
+        '  if(j.ok){location.reload();}else{alert(_T["js.ev_del_fail"]+j.error);}\n'
         '}\n'
         'document.getElementById("evModal").addEventListener("click",function(e){if(e.target===this)closeEvModal();});\n'
         '</script>\n'
     )
-    return _page_shell("envvars", _build_token_html(), body, is_admin=is_admin, current_user=current_user)
+    return _page_shell("envvars", _build_token_html(lang), body, is_admin=is_admin, current_user=current_user, lang=lang)
 
 
 # ---------------------------------------------------------------------------
 # 操作日志页
 # ---------------------------------------------------------------------------
 
+def _action_label(raw: str, lang: str) -> str:
+    """将操作记录中的 action 翻译为当前语言，兼容新旧格式。"""
+    if not raw:
+        return "-"
+    key = f"action.{raw}"
+    result = t(key, lang)
+    # t() 找不到时返回 key 本身，此时直接显示 DB 中的原始值
+    return result if result != key else raw
+
+
 def _render_logs_page(lpage: int = 1, lpage_size: int = 50,
                       lusername: str = "", laction: str = "",
-                      current_user: str = "") -> str:
+                      current_user: str = "", lang: str = "zh") -> str:
     """渲染管理员操作日志页（/admin/logs）。"""
     import urllib.parse as _up
     from services.db import list_admin_logs_paged, count_admin_logs
@@ -989,9 +1040,9 @@ def _render_logs_page(lpage: int = 1, lpage_size: int = 50,
                 f'padding:4px 8px;border:1px solid #c9d1e0;border-radius:4px">{lbl}</a>')
 
     pagination = (
-        f'{_plink(lpage - 1, "◄ 上一页")}'
-        f'<span style="margin:0 12px;color:#555">第 {lpage} / {total_pages} 页（共 {total} 条）</span>'
-        f'{_plink(lpage + 1, "下一页 ►")}'
+        f'{_plink(lpage - 1, t("logs.prev", lang))}'
+        f'<span style="margin:0 12px;color:#555">{t("logs.page_info", lang).format(lpage, total_pages, total)}</span>'
+        f'{_plink(lpage + 1, t("logs.next", lang))}'
     )
 
     def _esc(s: str) -> str:
@@ -1003,34 +1054,34 @@ def _render_logs_page(lpage: int = 1, lpage_size: int = 50,
                  'border-radius:6px;cursor:pointer;font-size:14px;text-decoration:none;'
                  'display:inline-flex;align-items:center"')
     _ps_opts  = ''.join(
-        f'<option value="{n}"' + (' selected' if n == lpage_size else '') + f'>{n} 条/页</option>'
+        f'<option value="{n}"' + (' selected' if n == lpage_size else '') + f'>{n} {t("logs.per_page", lang)}</option>'
         for n in [20, 50, 100, 200]
     )
     search_form = (
         '<form method="get" action="/admin/logs" '
         'style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">'
-        f'<input name="lusername" placeholder="用户名" value="{_esc(lusername)}" {_inp} '
+        f'<input name="lusername" placeholder="{t("logs.username", lang)}" value="{_esc(lusername)}" {_inp} '
         f'style="width:140px;border:1px solid #c9d1e0;border-radius:6px;padding:6px 10px;font-size:14px;height:36px">'
-        f'<input name="laction" placeholder="操作类型" value="{_esc(laction)}" {_inp} '
+        f'<input name="laction" placeholder="{t("logs.action", lang)}" value="{_esc(laction)}" {_inp} '
         f'style="width:160px;border:1px solid #c9d1e0;border-radius:6px;padding:6px 10px;font-size:14px;height:36px">'
         f'<select name="lpage_size" onchange="this.form.submit()" '
         f'style="border:1px solid #c9d1e0;border-radius:6px;padding:0 8px;font-size:14px;height:36px;cursor:pointer">'
         f'{_ps_opts}</select>'
-        f'<button type="submit" {_btn_blue}>搜索</button>'
-        f'<a href="/admin/logs" {_btn_gray}>重置</a>'
-        f'<button type="button" onclick="location.reload()" {_btn_gray}>刷新</button>'
+        f'<button type="submit" {_btn_blue}>{t("logs.search", lang)}</button>'
+        f'<a href="/admin/logs" {_btn_gray}>{t("logs.reset", lang)}</a>'
+        f'<button type="button" onclick="location.reload()" {_btn_gray}>{t("logs.refresh", lang)}</button>'
         '</form>'
     )
 
     if not records:
-        rows_html = '<tr><td colspan="6" style="text-align:center;color:#888;padding:24px">暂无记录</td></tr>'
+        rows_html = f'<tr><td colspan="6" style="text-align:center;color:#888;padding:24px">{t("logs.no_records", lang)}</td></tr>'
     else:
         rows_html = "\n".join(
             "<tr>"
             f"<td>{r['id']}</td>"
             f"<td style='font-weight:600'>{_esc(r.get('username') or '-')}</td>"
             f"<td style='color:#666;font-size:12px'>{_esc(r.get('ip') or '-')}</td>"
-            f"<td style='font-size:12px'>{_esc(r.get('action') or '-')}</td>"
+            f"<td style='font-size:12px'>{_esc(_action_label(r.get('action', ''), lang))}</td>"
             f"<td style='font-size:12px;color:#444;max-width:420px;word-break:break-all'>"
             f"{_esc(r.get('detail') or '-')}</td>"
             f"<td style='font-size:12px;white-space:nowrap'>{r.get('created_at') or '-'}</td>"
@@ -1042,222 +1093,28 @@ def _render_logs_page(lpage: int = 1, lpage_size: int = 50,
         search_form
         + f'\n<div class="pager">{pagination}</div>\n'
         '<table>\n<thead><tr>\n'
-        '  <th>#</th><th>用户名</th><th>来源 IP</th><th>操作类型</th><th>详情</th><th>时间</th>\n'
+        f'  <th>{t("logs.th_id", lang)}</th><th>{t("logs.th_username", lang)}</th>'
+        f'<th>{t("logs.th_ip", lang)}</th><th>{t("logs.th_action", lang)}</th>'
+        f'<th>{t("logs.th_detail", lang)}</th><th>{t("logs.th_time", lang)}</th>\n'
         '</tr></thead>\n'
         '<tbody>' + rows_html + '</tbody>\n'
         '</table>\n'
         f'<div class="pager" style="margin-top:12px">{pagination}</div>\n'
     )
-    return _page_shell("logs", _build_token_html(), body, is_admin=True, current_user=current_user)
+    return _page_shell("logs", _build_token_html(lang), body, is_admin=True, current_user=current_user, lang=lang)
 
 
 # ---------------------------------------------------------------------------
 # 脚本管理页（预检查 / 处理 共用模板）
 # ---------------------------------------------------------------------------
 
-def _render_about_page(is_admin: bool = True, current_user: str = "") -> str:
+def _render_about_page(is_admin: bool = True, current_user: str = "", lang: str = "zh") -> str:
     """渲染系统介绍页（/admin/about）。"""
-    body = (
-        '<div style="max-width:940px">'
-
-        # ── 系统标题 ──────────────────────────────────────────────────────────
-        '<h2 style="font-size:18px;color:#1d2129;margin:0 0 4px">飞书审批Claw</h2>'
-        '<p style="color:#666;font-size:13px;line-height:1.8;margin:0 0 24px">'
-        '通过 WebSocket 长连接实时监听飞书审批事件，自动完成'
-        '<b>预检查 → 审批通过 → 建处理群 → @Openclaw Bot 自动办理 或 低代码脚本处理</b>的全链路审批自动化。'
-        '</p>'
-
-        # ── 核心设计：Openclaw 对接 ───────────────────────────────────────────
-        '<h3 style="font-size:15px;color:#1a73e8;border-left:3px solid #1a73e8;'
-        'padding-left:10px;margin:0 0 12px">核心设计：审批 → 处理群 → Openclaw Bot 自动处理</h3>'
-        '<div style="background:#f7f9ff;border:1px solid #dce8ff;border-radius:8px;'
-        'padding:16px 20px;font-size:13px;line-height:2.2;margin-bottom:16px;font-family:monospace">'
-        '用户在飞书提交审批<br>'
-        '&nbsp;&nbsp;&nbsp;&nbsp;↓ 到达「预检查」节点<br>'
-        '&nbsp;&nbsp;&nbsp;&nbsp;↓ <b>自动执行预检查脚本</b> → 通过则继续，不通过则自动退回<br>'
-        '&nbsp;&nbsp;&nbsp;&nbsp;↓ 审批最终通过<br>'
-        '&nbsp;&nbsp;&nbsp;&nbsp;↓ 匹配「申请事项」对应的处理脚本<br>'
-        '&nbsp;&nbsp;&nbsp;&nbsp;├─ 有处理脚本 → <b>低代码脚本处理</b>（可对接 n8n / Dify 等工作流）<br>'
-        '&nbsp;&nbsp;&nbsp;&nbsp;└─ 无处理脚本 → <b>自动建群 + 拉人 + @Openclaw Bot</b><br>'
-        '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;'
-        '↓ Openclaw Bot 识别 @ 消息 → 匹配 Skill → 自动执行处理任务'
-        '</div>'
-
-        # ── Openclaw Bot 对接说明 ─────────────────────────────────────────────
-        '<h3 style="font-size:15px;color:#1a73e8;border-left:3px solid #1a73e8;'
-        'padding-left:10px;margin:0 0 12px">Openclaw Bot 对接说明</h3>'
-        '<div style="background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;'
-        'padding:14px 18px;font-size:13px;line-height:1.9;margin-bottom:16px">'
-        '<b>⚠️ 前提：Openclaw Bot 需要提前训练好对应的 Skills</b><br>'
-        '审批通过后，系统会自动创建飞书群并将 <b>Openclaw Bot</b>（WORKER_BOT_APP_ID 对应的机器人）'
-        '拉入群组，然后发送结构化的 @提及消息（包含申请人、申请事项、表单字段），'
-        'Openclaw Bot 收到 @消息后，依据预训练的 Skill 自动解析并处理申请。'
-        '<br><br>'
-        '要使对接正常工作，Openclaw 侧需要提前完成以下配置：'
-        '</div>'
-        '<table style="border-collapse:collapse;width:100%;margin-bottom:20px">'
-        '<tr>'
-        '<th style="background:#f0f4ff;color:#1d2129;padding:8px 12px;text-align:left;font-size:13px;'
-        'border:1px solid #dce8ff;width:200px">配置项</th>'
-        '<th style="background:#f0f4ff;color:#1d2129;padding:8px 12px;text-align:left;font-size:13px;'
-        'border:1px solid #dce8ff">说明</th>'
-        '</tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">训练 Skill</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        '针对每种「申请事项」（如：开通 VPN、申请数据库权限等），在 Openclaw 中预先训练'
-        '对应的 Skill，并使其能够识别本系统发送的消息格式（包含申请人姓名、申请事项关键词、所需参数）。'
-        '</td></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">消息格式约定</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        '系统向群发送的 @ 消息格式固定，包含：<code>申请人</code>（姓名+open_id）、'
-        '<code>申请事项</code>（审批表单中的事项字段值）、<code>表单字段</code>（所有 k/v 对）。'
-        'Openclaw 的 Skill 应按此格式设计触发条件和参数提取规则。'
-        '</td></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">Bot 需在群内</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        'WORKER_BOT_APP_ID 填写的应用必须已添加"机器人"能力，且机器人已被授权加入企业内部群。'
-        '系统通过其 open_id 将其拉入处理群后发送 @消息，Openclaw 才能收到并触发 Skill。'
-        '</td></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">人工兜底</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        'WORKER_USER_IDS 中的处理人也会被拉入群，作为人工监督和兜底处理。'
-        '若 Openclaw Skill 无法匹配或执行失败，处理人可直接在群内手动处理并关闭申请。'
-        '</td></tr>'
-        '</table>'
-
-        # ── 核心功能 ──────────────────────────────────────────────────────────
-        '<h3 style="font-size:15px;color:#1a73e8;border-left:3px solid #1a73e8;'
-        'padding-left:10px;margin:0 0 12px">功能模块</h3>'
-        '<table style="border-collapse:collapse;width:100%;margin-bottom:20px">'
-        '<tr><th style="background:#f0f4ff;color:#1d2129;padding:8px 12px;text-align:left;font-size:13px;'
-        'border:1px solid #dce8ff;width:160px">模块</th>'
-        '<th style="background:#f0f4ff;color:#1d2129;padding:8px 12px;text-align:left;font-size:13px;'
-        'border:1px solid #dce8ff">说明</th></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">预检查自动化</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        '审批流到达「预检查」节点时，自动执行对应脚本，返回 <code>(True, 原因)</code> 自动通过，'
-        '<code>(False, 原因)</code> 自动退回，无需人工介入。</td></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">处理群创建</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        '审批通过且无对应处理脚本时，自动创建飞书处理群、拉入处理人和 Openclaw Bot、'
-        '发送申请通知并 @机器人，触发自动处理流程。</td></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">低代码处理脚本</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        '按「申请事项」匹配处理脚本，有脚本则执行 <code>run(applicant, form)</code>，'
-        '优先于默认建群逻辑。几行 Python 即可对接 n8n、Dify 等外部工作流平台或调用任意 API。</td></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">脚本在线编辑</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        '后台直接新增/编辑 Python 脚本，支持语法高亮、实时传参调试，结果即时展示。'
-        '脚本内可直接 <code>import requests</code> 调用外部 API，零门槛对接第三方系统。</td></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">环境变量管理</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        '在后台「<a href="/admin/envvars" style="color:#1a73e8">环境变量</a>」Tab 中配置 KV，'
-        '脚本执行时自动注入为 <code>ENV</code> 字典，适合集中管理 API 密钥、账号等敏感参数。</td></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">操作记录</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        '所有管理操作（新增/编辑/删除脚本、保存配置、重启等）自动写入审计日志，记录操作人、来源 IP 和时间。</td></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">配置热更新</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        '所有配置均可在后台修改，「保存并重启」一键生效；配置优先级：数据库 > .env > 默认值。</td></tr>'
-        '</table>'
-
-        # ── 系统架构 ──────────────────────────────────────────────────────────
-        '<h3 style="font-size:15px;color:#1a73e8;border-left:3px solid #1a73e8;'
-        'padding-left:10px;margin:0 0 12px">系统架构</h3>'
-        '<div style="background:#f7f9ff;border:1px solid #dce8ff;border-radius:8px;'
-        'padding:14px 18px;font-size:13px;line-height:2;margin-bottom:20px;font-family:monospace">'
-        '飞书审批平台<br>'
-        '&nbsp;&nbsp;&nbsp;&nbsp;↓ WebSocket 长连接（approval_instance P1 事件，无需公网回调）<br>'
-        'main.py — 入口：初始化各组件、订阅审批事件、启动 WebSocket + HTTP 服务<br>'
-        '│<br>'
-        '├─ handlers/ — 审批事件处理<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;├─ approval.py — 事件路由（分发预检查 / 处理流程）<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;├─ precheck.py — 预检查节点：执行脚本 → 自动通过/退回<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;└─ process.py — 审批通过：执行脚本 或 建群 + @Openclaw Bot<br>'
-        '│<br>'
-        '├─ services/ — 基础服务层<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;├─ db.py — SQLite 数据层（WAL 模式，7 张表）<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;├─ chat.py — 飞书 IM（建群 / 拉人 / @Bot / 解散群）<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;├─ approval.py — 审批实例详情拉取 + 表单解析<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;├─ user_token.py — 用户 OAuth token（持久化 + 自动刷新 + 线程安全）<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;├─ user_profile.py — 用户资料查询（email/手机号 → open_id 解析）<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;├─ lark_client.py — 主应用 lark.Client 单例<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;├─ worker_bot.py — Openclaw Bot lark.Client 单例 + bot open_id<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;└─ notify.py — 飞书消息发送（脚本内可调用）<br>'
-        '│<br>'
-        '├─ web/server.py — 管理后台 HTTP 服务（FastAPI + uvicorn）<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;├─ /admin 路由（8 个 Tab）<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;└─ /auth + /callback — 飞书 OAuth 2.0 授权<br>'
-        '│<br>'
-        '├─ scheduler/ — 后台定时任务<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;├─ 群 TTL 清理（每小时） — 解散超期处理群<br>'
-        '│&nbsp;&nbsp;&nbsp;&nbsp;└─ Token 巡检（每 10 分钟） — access_token 剩余 &lt; 30 分钟自动 refresh<br>'
-        '│<br>'
-        '└─ data/ — 数据持久化（SQLite，Docker 挂载）'
-        '</div>'
-
-        # ── 脚本编写规范 ──────────────────────────────────────────────────────
-        '<h3 style="font-size:15px;color:#1a73e8;border-left:3px solid #1a73e8;'
-        'padding-left:10px;margin:0 0 12px">脚本编写规范</h3>'
-        '<table style="border-collapse:collapse;width:100%;margin-bottom:20px">'
-        '<tr><th style="background:#f0f4ff;color:#1d2129;padding:8px 12px;text-align:left;font-size:13px;'
-        'border:1px solid #dce8ff;width:160px">脚本类型</th>'
-        '<th style="background:#f0f4ff;color:#1d2129;padding:8px 12px;text-align:left;font-size:13px;'
-        'border:1px solid #dce8ff">触发时机 / 接口规范</th></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">预检查脚本</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        '<b>触发</b>：审批流到达 PRE_CHECK_NODE_NAME 同名节点时执行。<br>'
-        '<b>接口</b>：<code>def check(applicant: dict, form: dict) -> tuple[bool, str]</code>'
-        '</td></tr>'
-        '<tr><td style="padding:8px 12px;border:1px solid #eee;font-weight:600">处理脚本</td>'
-        '<td style="padding:8px 12px;border:1px solid #eee;font-size:13px;color:#444">'
-        '<b>触发</b>：审批通过后，「申请事项」与脚本名称完全匹配时执行，优先于默认建群逻辑。<br>'
-        '<b>接口</b>：<code>def run(applicant: dict, form: dict) -> None</code>'
-        '</td></tr>'
-        '</table>'
-
-        # ── 首次使用 ──────────────────────────────────────────────────────────
-        + (
-        '<h3 style="font-size:15px;color:#1a73e8;border-left:3px solid #1a73e8;'
-        'padding-left:10px;margin:0 0 12px">首次使用向导（管理员）</h3>'
-        '<ol style="font-size:13px;line-height:2.2;color:#444;margin:0 0 20px;padding-left:20px">'
-        '<li>在飞书开发者后台创建主应用，开通所需权限，订阅 approval_instance 事件。</li>'
-        '<li>在 Openclaw 中为各类申请事项训练好对应 Skill，约定好本系统的消息格式。</li>'
-        '<li>在「系统配置」填写 APP_ID / APP_SECRET / WORKER_BOT_APP_ID 等，点击「保存并重启」。</li>'
-        '<li>访问 <a href="/auth" style="color:#1a73e8">/auth</a> 完成飞书 OAuth 授权，获取用户级 token。</li>'
-        '<li>在飞书审批后台配置审批流（含预检查节点），将 code 填入 APPROVAL_CODES。</li>'
-        '<li>（可选）在「<a href="/admin/envvars" style="color:#1a73e8">环境变量</a>」Tab 中添加脚本所需的密钥/参数，'
-        '脚本执行时通过 <code>ENV.get("KEY", "")</code> 读取，无需硬编码。</li>'
-        '<li>（可选）在「自定义处理脚本」或「自定义预检查脚本」中编写 Python 脚本，实现自动化处理逻辑。</li>'
-        '<li>发起测试审批，在「预检查记录」和「处理记录」中观察执行结果；若出错可点击「重试」。</li>'
-        '</ol>'
-        if is_admin else
-        '<h3 style="font-size:15px;color:#1a73e8;border-left:3px solid #1a73e8;'
-        'padding-left:10px;margin:0 0 12px">新增申请事项向导（配置用户）</h3>'
-        '<ol style="font-size:13px;line-height:2.2;color:#444;margin:0 0 20px;padding-left:20px">'
-        '<li>在飞书审批后台确认目标审批表单中「申请事项」字段的<b>精确取值</b>，如果没有「申请事项」字段，则将审批名称作为「申请事项」的取值（可在「处理记录」或「预检查记录」的申请事项列查看已有样本）。</li>'
-        '<li>进入「<a href="/admin/precheck-scripts" style="color:#1a73e8">自定义预检查脚本</a>」，点击「新建」，脚本名称填写上一步确认的取值（必须完全一致）。</li>'
-        '<li>在编辑器中实现 <code>def check(applicant, form) -> tuple[bool, str]</code>，'
-        '通过返回 <code>(True, "")</code>，拒绝返回 <code>(False, "退回原因")</code>，保存。</li>'
-        '<li>（可选）在「调用参数」区填入测试用的 applicant/form JSON，点击「运行」验证返回值正确后再保存。</li>'
-        '<li>进入「<a href="/admin/process-scripts" style="color:#1a73e8">自定义处理脚本</a>」，同名新建脚本，'
-        '实现 <code>def run(applicant, form)</code>，编写审批通过后的自动化处理逻辑，保存。</li>'
-        '<li>同样在「调用参数」区填入测试数据，点击「运行」确认脚本无报错后保存。</li>'
-        '<li>发起一条真实测试审批，在「<a href="/admin/precheck-records" style="color:#1a73e8">预检查记录</a>」'
-        '和「<a href="/admin/process-records" style="color:#1a73e8">处理记录</a>」中确认状态为 success；'
-        '若为 error 可点击「重试」，并根据 extra_info 中的错误信息修正脚本。</li>'
-        '</ol>'
-        '<p style="font-size:12px;color:#888;margin:-8px 0 20px">'
-        '如需在「<a href="/admin/envvars" style="color:#1a73e8">环境变量</a>」Tab 中添加密钥，'
-        '或修改系统配置、新增审批 Code，请联系 admin。'
-        '</p>'
-        )
-        + '</div>'
-    )
-    return _page_shell("about", _build_token_html(), body, is_admin=is_admin, current_user=current_user)
+    body = about_body_zh(is_admin) if lang == "zh" else about_body_en(is_admin)
+    return _page_shell("about", _build_token_html(lang), body, is_admin=is_admin, current_user=current_user, lang=lang)
 
 
-def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: str = "") -> str:
+def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: str = "", lang: str = "zh") -> str:
     """渲染脚本管理页。script_type: 'precheck' 或 'process'。"""
     from services.db import (
         list_precheck_scripts, list_process_scripts,
@@ -1267,14 +1124,14 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
     if script_type == "precheck":
         scripts = list_precheck_scripts()
         tab_key = "precheck-scripts"
-        title = "自定义预检查脚本"
+        title = t("scripts.title_precheck", lang)
         api_prefix = "/api/precheck-scripts"
         debug_fn = "check"
         history = list_check_tasks_paged(1, 100)
     else:
         scripts = list_process_scripts()
         tab_key = "process-scripts"
-        title = "自定义处理任务脚本"
+        title = t("scripts.title_process", lang)
         api_prefix = "/api/process-scripts"
         debug_fn = "run"
         history = list_proc_tasks_paged(1, 100)
@@ -1339,7 +1196,9 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
     # -- 编写指南文档 --
     _rec_hint_pre  = '可在「预检查记录」页面的「申请事项」列查看任意一条记录确认。'
     _rec_hint_proc = '可在「处理任务」页面的「申请事项」列查看任意一条记录确认。'
-    if script_type == "precheck":
+    if lang == "en":
+        guide_html = scripts_guide_en(script_type)
+    elif script_type == "precheck":
         guide_html = (
             '<details style="margin-bottom:16px;background:#fff;border-radius:8px;padding:16px;'
             'box-shadow:0 1px 4px rgba(0,0,0,.08)">'
@@ -1489,28 +1348,28 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
 
     # -- 脚本列表表格 --
     if not scripts:
-        table_rows = '<tr><td colspan="4" style="text-align:center;color:#888;padding:24px">暂无脚本</td></tr>'
+        table_rows = f'<tr><td colspan="4" style="text-align:center;color:#888;padding:24px">{t("scripts.no_scripts", lang)}</td></tr>'
     else:
         trs = []
         for s in scripts:
             esc_name = s["name"].replace('"', "&quot;").replace("'", "\\'")
-            enabled_badge = ('<span style="color:#1a7f3c">✓ 启用</span>' if s["enabled"]
-                             else '<span style="color:#d93025">✗ 禁用</span>')
+            enabled_badge = (f'<span style="color:#1a7f3c">{t("scripts.enabled", lang)}</span>' if s["enabled"]
+                             else f'<span style="color:#d93025">{t("scripts.disabled", lang)}</span>')
             trs.append(
                 f'<tr>'
                 f'<td style="font-weight:600">{s["name"]}</td>'
                 f'<td>{enabled_badge}</td>'
                 f'<td style="font-size:12px;color:#888">{s.get("updated_at") or "-"}</td>'
                 f'<td>'
-                f'<button class="btn-orange" onclick="editScript(\'{esc_name}\')">编辑</button> '
-                f'<button class="btn-red" onclick="deleteScript(\'{esc_name}\')">删除</button>'
+                f'<button class="btn-orange" onclick="editScript(\'{esc_name}\')">{t("scripts.edit", lang)}</button> '
+                f'<button class="btn-red" onclick="deleteScript(\'{esc_name}\')">{t("scripts.delete", lang)}</button>'
                 f'</td>'
                 f'</tr>'
             )
         table_rows = "\n".join(trs)
 
     # -- 历史记录 options --
-    hist_options = '<option value="">-- 选择历史记录自动填入 --</option>'
+    hist_options = f'<option value="">{t("scripts.hist_default", lang)}</option>'
     for h in history:
         hname = h.get("applicant_name") or h.get("applicant_open_id") or "?"
         hsubj = h.get("subject") or "?"
@@ -1529,10 +1388,11 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
         '<div style="margin-bottom:16px">'
         '<button onclick="newScript()" style="background:#1a73e8;color:#fff;border:none;'
         'padding:6px 18px;border-radius:6px;cursor:pointer;font-size:13px;margin-bottom:10px">'
-        '新增脚本</button>'
+        f'{t("scripts.add", lang)}</button>'
         '</div>'
         '<table><thead><tr>'
-        '<th>申请事项</th><th>状态</th><th>更新时间</th><th>操作</th>'
+        f'<th>{t("scripts.th_subject", lang)}</th><th>{t("scripts.th_status", lang)}</th>'
+        f'<th>{t("scripts.th_time", lang)}</th><th>{t("scripts.th_action", lang)}</th>'
         '</tr></thead><tbody>'
         + table_rows +
         '</tbody></table>'
@@ -1545,21 +1405,21 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
         # 顶栏
         '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px;'
         'border-bottom:1px solid #eee;flex-shrink:0">'
-        '<h3 id="modalTitle" style="margin:0;font-size:16px">编辑脚本</h3>'
+        f'<h3 id="modalTitle" style="margin:0;font-size:16px">{t("scripts.modal_edit", lang)}</h3>'
         '<div style="display:flex;align-items:center;gap:16px">'
         '<label style="font-size:13px;display:flex;align-items:center;gap:4px">'
-        '<input id="scriptEnabled" type="checkbox" checked> 启用</label>'
+        f'<input id="scriptEnabled" type="checkbox" checked> {t("scripts.enable_label", lang)}</label>'
         '<button onclick="saveScript()" style="background:#1a73e8;color:#fff;border:none;'
-        'padding:6px 20px;border-radius:6px;cursor:pointer;font-size:13px">保存</button>'
+        f'padding:6px 20px;border-radius:6px;cursor:pointer;font-size:13px">{t("scripts.save", lang)}</button>'
         '<button onclick="loadHistory()" style="background:#6c757d;color:#fff;border:none;'
-        'padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px">历史版本</button>'
+        f'padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px">{t("scripts.history", lang)}</button>'
         '<button onclick="closeEditModal()" style="background:#888;color:#fff;border:none;'
-        'padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px">关闭</button>'
+        f'padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px">{t("scripts.close", lang)}</button>'
         '</div></div>'
         # 脚本名称行
         '<div style="padding:10px 24px;border-bottom:1px solid #f0f0f0;flex-shrink:0;display:flex;'
         'align-items:center;gap:12px">'
-        '<label style="font-size:13px;white-space:nowrap;font-weight:600">申请事项</label>'
+        f'<label style="font-size:13px;white-space:nowrap;font-weight:600">{t("scripts.name_label", lang)}</label>'
         '<input id="scriptName" style="flex:1;max-width:400px;border:1px solid #ccc;border-radius:4px;'
         'padding:5px 10px;font-size:14px">'
         '</div>'
@@ -1568,7 +1428,7 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
         # 左栏：代码编辑器
         '<div style="flex:1;display:flex;flex-direction:column;border-right:1px solid #eee;min-width:0;overflow:hidden">'
         '<div style="padding:8px 16px;border-bottom:1px solid #f5f5f5;font-size:13px;font-weight:600;'
-        'color:#555;flex-shrink:0">代码编辑器</div>'
+        f'color:#555;flex-shrink:0">{t("scripts.editor_label", lang)}</div>'
         '<textarea id="scriptCode" style="flex:1;width:100%;border:none;font-family:\'Menlo\',\'Consolas\',monospace;'
         'font-size:13px;line-height:1.5;padding:12px 16px;tab-size:4;white-space:pre;overflow:auto;resize:none;'
         'outline:none;background:#fafafa;box-sizing:border-box"></textarea>'
@@ -1576,11 +1436,11 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
         # 右栏：调试面板
         '<div style="width:440px;flex-shrink:0;display:flex;flex-direction:column;overflow:hidden">'
         '<div style="padding:8px 16px;border-bottom:1px solid #f5f5f5;font-size:13px;font-weight:600;'
-        'color:#555;flex-shrink:0">调试面板</div>'
+        f'color:#555;flex-shrink:0">{t("scripts.debug_label", lang)}</div>'
         '<div style="flex:1;overflow-y:auto;padding:12px 16px">'
         # 历史记录下拉
         '<div style="margin-bottom:10px">'
-        '<label style="font-size:12px;color:#666">填入历史记录</label><br>'
+        f'<label style="font-size:12px;color:#666">{t("scripts.hist_select", lang)}</label><br>'
         f'<select id="debugHistory" onchange="fillHistory()" style="width:100%;border:1px solid #ccc;'
         f'border-radius:4px;padding:5px;font-size:12px;margin-top:3px">{hist_options}</select>'
         '</div>'
@@ -1599,11 +1459,11 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
         # 执行按钮
         '<button onclick="runDebug()" style="background:#1a73e8;color:#fff;border:none;padding:7px 20px;'
         'border-radius:6px;cursor:pointer;font-size:13px;margin-bottom:10px;width:100%">'
-        '执行调试（使用编辑器中的代码）</button>'
+        f'{t("scripts.run_debug", lang)}</button>'
         # 输出
         '<pre id="debugOutput" style="background:#1d2129;color:#e6e6e6;border-radius:6px;padding:12px;'
         'font-size:12px;white-space:pre-wrap;word-break:break-all;min-height:120px;max-height:100%;overflow:auto">'
-        '等待执行……</pre>'
+        f'{t("scripts.await_exec", lang)}</pre>'
         '</div></div>'  # 右栏结束
         '</div>'  # flex 两栏结束
         '</div></div>'  # modal 结束
@@ -1643,13 +1503,13 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
         '\n'
         'function newScript() {\n'
         '  _editingOld = "";\n'
-        '  document.getElementById("modalTitle").textContent = "新增脚本";\n'
+        '  document.getElementById("modalTitle").textContent = _T["js.sc_modal_new"];\n'
         '  document.getElementById("scriptName").value = "";\n'
         '  document.getElementById("scriptName").disabled = false;\n'
         '  document.getElementById("scriptEnabled").checked = true;\n'
         '  ensureScriptEditor();\n'
         '  setScriptCode(TEMPLATE);\n'
-        '  document.getElementById("debugOutput").textContent = "等待执行……";\n'
+        '  document.getElementById("debugOutput").textContent = _T["js.sc_await"];\n'
         '  document.getElementById("debugApplicant").value = "{}";\n'
         '  document.getElementById("debugForm").value = "{}";\n'
         '  document.getElementById("editModal").style.display = "flex";\n'
@@ -1658,15 +1518,15 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
         'async function editScript(name) {\n'
         '  const r = await fetch(API + "/get?name=" + encodeURIComponent(name));\n'
         '  const j = await r.json();\n'
-        '  if(!j.ok){ alert("加载失败: " + j.error); return; }\n'
+        '  if(!j.ok){ alert(_T["js.sc_load_fail"] + j.error); return; }\n'
         '  _editingOld = name;\n'
-        '  document.getElementById("modalTitle").textContent = "编辑脚本: " + name;\n'
+        '  document.getElementById("modalTitle").textContent = _T["js.sc_modal_edit"] + name;\n'
         '  document.getElementById("scriptName").value = j.data.name;\n'
         '  document.getElementById("scriptName").disabled = true;\n'
         '  document.getElementById("scriptEnabled").checked = !!j.data.enabled;\n'
         '  ensureScriptEditor();\n'
         '  setScriptCode(j.data.code);\n'
-        '  document.getElementById("debugOutput").textContent = "等待执行……";\n'
+        '  document.getElementById("debugOutput").textContent = _T["js.sc_await"];\n'
         '  document.getElementById("debugApplicant").value = "{}";\n'
         '  document.getElementById("debugForm").value = "{}";\n'
         '  document.getElementById("editModal").style.display = "flex";\n'
@@ -1680,23 +1540,23 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
         '  const name = document.getElementById("scriptName").value.trim();\n'
         '  const code = getScriptCode();\n'
         '  const enabled = document.getElementById("scriptEnabled").checked ? 1 : 0;\n'
-        '  if(!name){ alert("名称不能为空"); return; }\n'
+        '  if(!name){ alert(_T["js.sc_name_empty"]); return; }\n'
         '  const endpoint = _editingOld ? "/edit" : "/create";\n'
         '  const r = await fetch(API + endpoint, {method:"POST",\n'
         '    headers:{"Content-Type":"application/json"},\n'
         '    body:JSON.stringify({name, code, enabled})});\n'
         '  const j = await r.json();\n'
-        '  if(j.ok){ alert("✓ 已保存"); location.reload(); }\n'
+        '  if(j.ok){ alert(_T["js.sc_saved"]); location.reload(); }\n'
         '  else { alert("✗ " + j.error); }\n'
         '}\n'
         '\n'
         'async function deleteScript(name) {\n'
-        '  if(!confirm("确认删除脚本: " + name + "？")) return;\n'
+        '  if(!confirm(_T["js.sc_del_confirm"] + name + _T["js.sc_del_confirm_end"])) return;\n'
         '  const r = await fetch(API + "/delete", {method:"POST",\n'
         '    headers:{"Content-Type":"application/json"},\n'
         '    body:JSON.stringify({name})});\n'
         '  const j = await r.json();\n'
-        '  if(j.ok){ alert("✓ 已删除"); location.reload(); }\n'
+        '  if(j.ok){ alert(_T["js.sc_deleted"]); location.reload(); }\n'
         '  else { alert("✗ " + j.error); }\n'
         '}\n'
         '\n'
@@ -1710,50 +1570,50 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
         '\n'
         'async function runDebug() {\n'
         '  const code = getScriptCode();\n'
-        '  if(!code.trim()){ alert("代码不能为空"); return; }\n'
+        '  if(!code.trim()){ alert(_T["js.sc_code_empty"]); return; }\n'
         '  const scriptName = document.getElementById("scriptName").value.trim() || "untitled";\n'
         '  let applicant, form;\n'
         '  try { applicant = JSON.parse(document.getElementById("debugApplicant").value); }\n'
-        '  catch(e){ alert("applicant JSON 格式错误"); return; }\n'
+        '  catch(e){ alert(_T["js.sc_applicant_err"]); return; }\n'
         '  try { form = JSON.parse(document.getElementById("debugForm").value); }\n'
-        '  catch(e){ alert("form JSON 格式错误"); return; }\n'
-        '  document.getElementById("debugOutput").textContent = "执行中……";\n'
+        '  catch(e){ alert(_T["js.sc_form_err"]); return; }\n'
+        '  document.getElementById("debugOutput").textContent = _T["js.sc_executing"];\n'
         '  try {\n'
         '    const r = await fetch(API + "/debug", {method:"POST",\n'
         '      headers:{"Content-Type":"application/json"},\n'
         '      body:JSON.stringify({script_name:scriptName, code, applicant, form})});\n'
         '    const j = await r.json();\n'
         '    let out = "";\n'
-        '    if(j.error) out += "❌ 异常:\\n" + j.error + "\\n\\n";\n'
+        '    if(j.error) out += _T["js.debug_error"] + j.error + "\\n\\n";\n'
         '    if(j.format_warning) out += j.format_warning + "\\n\\n";\n'
-        '    if(j.result !== undefined && j.result !== null) out += "📋 返回值:\\n" + JSON.stringify(j.result, null, 2) + "\\n\\n";\n'
-        '    if(j.stdout) out += "📤 stdout:\\n" + j.stdout + "\\n";\n'
-        '    if(j.stderr) out += "⚠️ stderr:\\n" + j.stderr + "\\n";\n'
-        '    if(!out) out = "✓ 执行完成（无输出）";\n'
+        '    if(j.result !== undefined && j.result !== null) out += _T["js.debug_result"] + JSON.stringify(j.result, null, 2) + "\\n\\n";\n'
+        '    if(j.stdout) out += _T["js.debug_stdout"] + j.stdout + "\\n";\n'
+        '    if(j.stderr) out += _T["js.debug_stderr"] + j.stderr + "\\n";\n'
+        '    if(!out) out = _T["js.debug_done"];\n'
         '    document.getElementById("debugOutput").textContent = out;\n'
         '  } catch(e) {\n'
-        '    document.getElementById("debugOutput").textContent = "❌ 请求失败: " + e;\n'
+        '    document.getElementById("debugOutput").textContent = _T["js.sc_request_fail"] + e;\n'
         '  }\n'
         '}\n'
         '\n'
         'async function loadHistory() {\n'
         '  const name = document.getElementById("scriptName").value.trim();\n'
-        '  if(!name){ alert("请先打开一个脚本"); return; }\n'
+        '  if(!name){ alert(_T["js.sc_open_first"]); return; }\n'
         '  const r = await fetch(API+"/history",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});\n'
         '  const j = await r.json();\n'
-        '  if(!j.ok){ alert("加载失败: "+j.error); return; }\n'
-        '  if(!j.data.length){ alert("暂无历史版本"); return; }\n'
-        '  let msg = "版本历史（最近 " + j.data.length + " 条）：\\n\\n";\n'
+        '  if(!j.ok){ alert(_T["js.sc_hist_load_fail"]+j.error); return; }\n'
+        '  if(!j.data.length){ alert(_T["js.sc_no_history"]); return; }\n'
+        '  let msg = _T["js.sc_hist_title"] + j.data.length + _T["js.sc_hist_title_end"];\n'
         '  j.data.forEach((h,i)=>{ msg += (i+1) + ". [" + h.created_at + "] " + (h.username||"system") + "\\n"; });\n'
-        '  msg += "\\n输入序号回滚到该版本（取消则不操作）：";\n'
+        '  msg += _T["js.sc_hist_prompt"];\n'
         '  const idx = prompt(msg);\n'
         '  if(!idx) return;\n'
         '  const n = parseInt(idx)-1;\n'
-        '  if(isNaN(n)||n<0||n>=j.data.length){ alert("无效序号"); return; }\n'
-        '  if(!confirm("确认回滚到 " + j.data[n].created_at + " 的版本？当前编辑器中的代码将被覆盖。")) return;\n'
+        '  if(isNaN(n)||n<0||n>=j.data.length){ alert(_T["js.sc_hist_invalid"]); return; }\n'
+        '  if(!confirm(_T["js.sc_hist_confirm"] + j.data[n].created_at + _T["js.sc_hist_confirm_end"])) return;\n'
         '  const rr = await fetch(API+"/rollback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({history_id:j.data[n].id})});\n'
         '  const jj = await rr.json();\n'
-        '  if(jj.ok){ alert("✓ 已回滚"); location.reload(); } else { alert("✗ "+jj.error); }\n'
+        '  if(jj.ok){ alert(_T["js.sc_hist_ok"]); location.reload(); } else { alert("✗ "+jj.error); }\n'
         '}\n'
         '\n'
         '// textarea: Tab → 4 空格, Shift+Tab → 反缩进\n'
@@ -1776,7 +1636,7 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
         '});\n'
         '</script>\n'
     )
-    return _page_shell(tab_key, _build_token_html(), body, is_admin=is_admin, current_user=current_user)
+    return _page_shell(tab_key, _build_token_html(lang), body, is_admin=is_admin, current_user=current_user, lang=lang)
 
 
 # ---------------------------------------------------------------------------
@@ -1858,28 +1718,31 @@ async def _unauth_handler(request: Request, exc: _UnauthorizedException):
 
 @app.exception_handler(_ForbiddenException)
 async def _forbidden_handler(request: Request, exc: _ForbiddenException):
-    return HTMLResponse("<h2>403 Forbidden</h2><p>此操作仅主管理员可执行。</p>", status_code=403)
+    lang = _get_lang(request)
+    return HTMLResponse(f"<h2>403 Forbidden</h2><p>{t('forbidden', lang)}</p>", status_code=403)
 
 
 # -- 日志 & 辅助 ---------------------------------------------------------------
 
 def _log_admin_action(username: str, request: Request, action: str, detail: str = "") -> None:
-    _action_labels = {
-        "save_settings": "保存配置", "restart": "重启服务",
-        "retry_task": "重试处理", "retry_check": "重试预检",
-        "dissolve_group": "解散群", "precheck_create": "新增预检脚本",
-        "precheck_edit": "编辑预检脚本", "precheck_delete": "删除预检脚本",
-        "process_create": "新增处理脚本", "process_edit": "编辑处理脚本",
-        "process_delete": "删除处理脚本", "envvar_create": "新增环境变量",
-        "envvar_edit": "修改环境变量", "envvar_delete": "删除环境变量",
-    }
+    """记录管理操作日志，action 存储原始 key，展示时再按语言翻译。"""
     try:
         from services.db import log_admin_action
         ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
               or (request.client.host if request.client else ""))
-        log_admin_action(username, ip, _action_labels.get(action, action), detail)
+        log_admin_action(username, ip, action, detail)
     except Exception:
         pass
+
+
+# -- GET /api/set-lang --------------------------------------------------------
+
+@app.get("/api/set-lang")
+async def set_lang(lang: str = "zh", next: str = "/admin"):
+    lang = lang if lang in ("zh", "en") else "zh"
+    resp = RedirectResponse(next, status_code=302)
+    resp.set_cookie("admin_lang", lang, max_age=365 * 24 * 3600)
+    return resp
 
 
 # -- GET /health --------------------------------------------------------------
@@ -1997,9 +1860,10 @@ async def admin_proc(request: Request, page: int = 1, name: str = "",
                      user: str = Depends(_require_any)):
     page_size = page_size if page_size in (10, 20, 50, 100) else 20
     is_adm = _is_admin_user(request)
+    lang = _get_lang(request)
     try:
         html = _render_proc_page(page=page, page_size=page_size, name=name,
-                                 subject=subject, is_admin=is_adm, current_user=user)
+                                 subject=subject, is_admin=is_adm, current_user=user, lang=lang)
         return HTMLResponse(html)
     except Exception as e:
         logger.error("渲染处理任务页失败: %s", e)
@@ -2012,10 +1876,11 @@ async def admin_check(request: Request, cpage: int = 1, cname: str = "",
                       user: str = Depends(_require_any)):
     cpage_size = cpage_size if cpage_size in (10, 20, 50, 100) else 20
     is_adm = _is_admin_user(request)
+    lang = _get_lang(request)
     try:
         html = _render_check_page(cpage=cpage, cpage_size=cpage_size,
                                   csubject=csubject, cname=cname,
-                                  is_admin=is_adm, current_user=user)
+                                  is_admin=is_adm, current_user=user, lang=lang)
         return HTMLResponse(html)
     except Exception as e:
         logger.error("渲染预检查页失败: %s", e)
@@ -2023,9 +1888,10 @@ async def admin_check(request: Request, cpage: int = 1, cname: str = "",
 
 
 @app.get("/admin/settings")
-async def admin_settings(user: str = Depends(_require_admin_dep)):
+async def admin_settings(request: Request, user: str = Depends(_require_admin_dep)):
+    lang = _get_lang(request)
     try:
-        html = _render_settings_page(current_user=user)
+        html = _render_settings_page(current_user=user, lang=lang)
         return HTMLResponse(html)
     except Exception as e:
         logger.error("渲染系统配置页失败: %s", e)
@@ -2035,8 +1901,9 @@ async def admin_settings(user: str = Depends(_require_admin_dep)):
 @app.get("/admin/envvars")
 async def admin_envvars(request: Request, user: str = Depends(_require_any)):
     is_adm = _is_admin_user(request)
+    lang = _get_lang(request)
     try:
-        html = _render_envvars_page(is_admin=is_adm, current_user=user)
+        html = _render_envvars_page(is_admin=is_adm, current_user=user, lang=lang)
         return HTMLResponse(html)
     except Exception as e:
         logger.error("渲染环境变量页失败: %s", e)
@@ -2046,8 +1913,9 @@ async def admin_envvars(request: Request, user: str = Depends(_require_any)):
 @app.get("/admin/about")
 async def admin_about(request: Request, user: str = Depends(_require_any)):
     is_adm = _is_admin_user(request)
+    lang = _get_lang(request)
     try:
-        html = _render_about_page(is_admin=is_adm, current_user=user)
+        html = _render_about_page(is_admin=is_adm, current_user=user, lang=lang)
         return HTMLResponse(html)
     except Exception as e:
         logger.error("渲染系统介绍页失败: %s", e)
@@ -2059,9 +1927,10 @@ async def admin_logs(request: Request, lpage: int = 1, lusername: str = "",
                      laction: str = "", lpage_size: int = 50,
                      user: str = Depends(_require_admin_dep)):
     lpage_size = lpage_size if lpage_size in (20, 50, 100, 200) else 50
+    lang = _get_lang(request)
     try:
         html = _render_logs_page(lpage=lpage, lpage_size=lpage_size,
-                                 lusername=lusername, laction=laction, current_user=user)
+                                 lusername=lusername, laction=laction, current_user=user, lang=lang)
         return HTMLResponse(html)
     except Exception as e:
         logger.error("渲染操作日志页失败: %s", e)
@@ -2071,8 +1940,9 @@ async def admin_logs(request: Request, lpage: int = 1, lusername: str = "",
 @app.get("/admin/precheck-scripts")
 async def admin_precheck_scripts(request: Request, user: str = Depends(_require_any)):
     is_adm = _is_admin_user(request)
+    lang = _get_lang(request)
     try:
-        html = _render_scripts_page("precheck", is_admin=is_adm, current_user=user)
+        html = _render_scripts_page("precheck", is_admin=is_adm, current_user=user, lang=lang)
         return HTMLResponse(html)
     except Exception as e:
         logger.error("渲染预检查脚本页失败: %s", e)
@@ -2082,8 +1952,9 @@ async def admin_precheck_scripts(request: Request, user: str = Depends(_require_
 @app.get("/admin/process-scripts")
 async def admin_process_scripts(request: Request, user: str = Depends(_require_any)):
     is_adm = _is_admin_user(request)
+    lang = _get_lang(request)
     try:
-        html = _render_scripts_page("process", is_admin=is_adm, current_user=user)
+        html = _render_scripts_page("process", is_admin=is_adm, current_user=user, lang=lang)
         return HTMLResponse(html)
     except Exception as e:
         logger.error("渲染处理脚本页失败: %s", e)
@@ -2091,12 +1962,14 @@ async def admin_process_scripts(request: Request, user: str = Depends(_require_a
 
 
 @app.get("/logout")
-async def logout():
+async def logout(request: Request):
+    lang = _get_lang(request)
     return Response(
-        content="<!DOCTYPE html><html lang=\"zh\"><head><meta charset=\"utf-8\"></head>"
-                "<body style=\"font-family:sans-serif;text-align:center;padding-top:120px\">"
-                "<h2>已退出</h2><p><a href=\"/admin\" style=\"color:#1a73e8\">点击重新登录</a></p>"
-                "</body></html>",
+        content=f'<!DOCTYPE html><html lang="{lang}"><head><meta charset="utf-8"></head>'
+                f'<body style="font-family:sans-serif;text-align:center;padding-top:120px">'
+                f'<h2>{t("shell.logged_out", lang)}</h2>'
+                f'<p><a href="/admin" style="color:#1a73e8">{t("shell.relogin", lang)}</a></p>'
+                f'</body></html>',
         status_code=401,
         headers={"WWW-Authenticate": 'Basic realm="AiOps"',
                  "Content-Type": "text/html; charset=utf-8"},
@@ -2125,7 +1998,7 @@ async def get_script_api(request: Request, name: str = "",
 
 @app.post("/api/restart")
 async def api_restart(request: Request, user: str = Depends(_require_admin_dep)):
-    _log_admin_action(user, request, "restart", "直接重启服务")
+    _log_admin_action(user, request, "restart", "Direct restart" if _get_lang(request) == "en" else "直接重启服务")
     import sys as _sys, asyncio as _asyncio
     async def _do_restart():
         await _asyncio.sleep(0.1)
