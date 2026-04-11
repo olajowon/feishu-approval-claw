@@ -54,6 +54,15 @@ class UserTokenManager:
             self._do_refresh()
         return self._access_token
 
+    @property
+    def expires_in(self) -> float:
+        """返回 access_token 距过期的剩余秒数（可为负，表示已过期）。"""
+        return self._expires_at - time.time()
+
+    def try_refresh(self) -> bool:
+        """主动尝试刷新 token。成功返回 True，失败返回 False。"""
+        return self._do_refresh()
+
     def handle_expired(self) -> str:
         """
         API 返回 token 无效错误时调用，强制立即刷新并返回新 token。

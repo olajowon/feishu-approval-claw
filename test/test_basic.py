@@ -319,5 +319,56 @@ class TestLarkClient(unittest.TestCase):
             lc._instance = orig
 
 
+# ── 测试 _send_alert 空 webhook 短路 ─────────────────────────────────────────
+class TestSendAlert(unittest.TestCase):
+    def test_send_alert_noop_when_webhook_empty(self):
+        """ALERT_WEBHOOK 为空时 _send_alert 应直接返回，不发请求。"""
+        from handlers.approval import _send_alert
+        with patch("handlers.approval.ALERT_WEBHOOK", ""):
+            # 若未短路会因 requests.post("") 抛 MissingSchema
+            _send_alert("test", "body")  # 不应抛异常
+
+
+# ── 测试 UserTokenManager 公开属性 ───────────────────────────────────────────
+class TestUserTokenManagerPublicAPI(unittest.TestCase):
+    def test_expires_in(self):
+        """expires_in 属性正确返回剩余秒数。"""
+        import time
+        from services.user_token import UserTokenManager
+        mgr = UserTokenManager("id", "secret", "at", "rt",
+                               expires_at=time.time() + 3600)
+        self.assertAlmostEqual(mgr.expires_in, 3600, delta=5)
+
+    def test_try_refresh_without_refresh_token(self):
+        """无 refresh_token 时 try_refresh 返回 False。"""
+        from services.user_token import UserTokenManager
+        mgr = UserTokenManager("id", "secret", "at", "",
+                               expires_at=0)
+        self.assertFalse(mgr.try_refresh())
+
+
+# ── 测试 DB _read_conn query_only 安全性 ─────────────────────────────────────
+class TestReadConnQueryOnly(unittest.TestCase):
+    def test_read_conn_rejects_writes(self):
+        """_read_conn 应拒绝写操作。"""
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        import services.db as db
+        import config
+        orig = db.DB_FILE
+        db.DB_FILE = tmp.name
+        config.DB_FILE = tmp.name
+        try:
+            db.init_db()
+            with db._read_conn() as con:
+                with self.assertRaises(sqlite3.OperationalError):
+                    con.execute("INSERT INTO settings (key, value) VALUES ('x', 'y')")
+        finally:
+            db.DB_FILE = orig
+            config.DB_FILE = orig
+            os.unlink(tmp.name)
+
+
 if __name__ == "__main__":
     unittest.main()
