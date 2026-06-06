@@ -62,14 +62,22 @@ CONFIG_META: list[tuple[str, str, str, bool]] = [
     ("APP_ID",
      "主应用 App ID。在飞书开发者后台（developer.feishu.cn）创建企业应用后获取。"
      "用于连接飞书开放平台、接收审批事件、发起 OAuth 授权。未配置时系统只启动管理后台。"
-     "<br>需要开通的<b>权限</b>：approval:approval、approval:approval:subscribe、"
-     "im:message:send_as_bot、im:chat:create、im:chat.group.member:add、contact:user.base:readonly。"
+     "<br>需要开通的<b>应用身份权限</b>（tenant_access_token）："
+     "approval:approval、approval:approval:subscribe、"
+     "im:message:send_as_bot、im:chat:create、im:chat、im:chat.group.member:add、"
+     "contact:user.base:readonly。"
+     "<br>需要开通的<b>用户身份权限</b>（user_access_token，OAuth 授权时勾选）："
+     "offline_access、im:chat、im:chat:create、im:message、contact:user.base:readonly。"
      "<br>需要订阅的<b>事件</b>：审批 — 审批任务（P1 格式，approval_instance）。",
      "Main app App ID. Obtain from the Lark developer console (developer.feishu.cn) after creating an enterprise app. "
      "Used to connect to the Lark Open Platform, receive approval events, and initiate OAuth authorization. "
      "System starts in admin-only mode when not configured."
-     "<br>Required <b>permissions</b>: approval:approval, approval:approval:subscribe, "
-     "im:message:send_as_bot, im:chat:create, im:chat.group.member:add, contact:user.base:readonly."
+     "<br>Required <b>app-identity permissions</b> (tenant_access_token): "
+     "approval:approval, approval:approval:subscribe, "
+     "im:message:send_as_bot, im:chat:create, im:chat, im:chat.group.member:add, "
+     "contact:user.base:readonly."
+     "<br>Required <b>user-identity permissions</b> (user_access_token, granted during OAuth): "
+     "offline_access, im:chat, im:chat:create, im:message, contact:user.base:readonly."
      "<br>Required <b>event</b>: Approval — Approval Task (P1 format, approval_instance).",
      False),
     ("APP_SECRET",
@@ -142,12 +150,12 @@ CONFIG_META: list[tuple[str, str, str, bool]] = [
      "Alert Webhook URL. When pre-check or processing errors occur, the system sends alerts to this Lark bot Webhook. Leave empty to disable.",
      False),
     ("PUBLIC_DOMAIN",
-     "本服务对外可访问的域名（含协议），用于在管理后台展示飞书审批「外部选项」控件应配置的回调 URL。"
-     "例如 <code>https://approval.example.com</code>；留空时管理页显示占位符 <code>{{PUBLIC_DOMAIN}}</code>。"
-     "仅影响展示，不影响实际回调匹配。",
-     "Public-facing domain of this service (with scheme), used in the admin page to display the callback URL "
-     "to configure in Lark approval external option controls, e.g. <code>https://approval.example.com</code>. "
-     "Leave empty to show the literal placeholder <code>{{PUBLIC_DOMAIN}}</code>. Display-only.",
+     "公网域名（含协议）。用于拼接对外暴露的接口地址，如选项回调 URL。"
+     "<br>示例：<code>https://example.com</code> 或 <code>https://example.com/prefix</code>"
+     "（带路径前缀时反向代理需 strip 前缀再转发）。",
+     "Public domain (with scheme). Used to assemble externally-exposed endpoint URLs such as option callback URLs."
+     "<br>Example: <code>https://example.com</code> or <code>https://example.com/prefix</code> "
+     "(when a path prefix is used, the reverse proxy must strip the prefix before forwarding).",
      False),
 ]
 
