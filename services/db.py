@@ -2,11 +2,12 @@
 db.py - SQLite data access layer.
 
 Tables:
-  proc_tasks        - 审批通过后的处理任务追踪（建群 / 运行脚本）
-  check_tasks       - 预检查节点自动审批记录
-  settings          - key-value config（存储 user token、系统配置等）
-  precheck_scripts  - 预检查脚本（代码存库）
-  process_scripts   - 处理脚本（代码存库）
+  proc_tasks              - 审批通过后的处理任务追踪（建群 / 运行脚本）
+  check_tasks             - 预检查节点自动审批记录
+  settings                - key-value config（存储 user token、系统配置等）
+  precheck_scripts        - 预检查脚本（代码存库）
+  process_scripts         - 处理脚本（代码存库）
+  option_callback_scripts - 飞书外部选项控件回调脚本（代码存库）
 """
 import glob
 import logging
@@ -109,6 +110,24 @@ CREATE TABLE IF NOT EXISTS process_scripts (
 );
 """
 
+# 选项回调脚本表：为飞书审批「外部选项」控件提供数据源。
+# token / encrypt_key 与飞书外部选项控件的配置一一对应；
+# enrich_applicant=1 时，回调入口会按 employee_id 拉取完整 applicant 字典再注入脚本。
+_CREATE_OPTION_CALLBACK_SCRIPTS = """
+CREATE TABLE IF NOT EXISTS option_callback_scripts (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    name             TEXT    UNIQUE NOT NULL,
+    code             TEXT    NOT NULL DEFAULT '',
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    enrich_applicant INTEGER NOT NULL DEFAULT 0,
+    token            TEXT    NOT NULL DEFAULT '',
+    encrypt_key      TEXT    NOT NULL DEFAULT '',
+    last_request     TEXT    DEFAULT NULL,
+    created_at       DATETIME DEFAULT (datetime('now','localtime')),
+    updated_at       DATETIME DEFAULT (datetime('now','localtime'))
+);
+"""
+
 # 管理操作日志表
 # action: save_settings | restart | dissolve_group | retry_task | retry_check |
 #         script_create | script_update | script_delete | send_notify
@@ -195,6 +214,7 @@ def init_db() -> None:
         con.execute(_CREATE_CHECK_TASKS)
         con.execute(_CREATE_PRECHECK_SCRIPTS)
         con.execute(_CREATE_PROCESS_SCRIPTS)
+        con.execute(_CREATE_OPTION_CALLBACK_SCRIPTS)
         con.execute(_CREATE_ADMIN_LOGS)
         con.execute(_CREATE_SCRIPT_ENVVARS)
         con.execute(_CREATE_SCRIPT_HISTORY)
@@ -502,19 +522,31 @@ def _get_script(table: str, name: str) -> Optional[Dict]:
     return dict(row) if row else None
 
 
+_TABLE_TO_SCRIPT_TYPE = {
+    "precheck_scripts":        "precheck",
+    "process_scripts":         "process",
+    "option_callback_scripts": "option_callback",
+}
+
+
+def _record_script_history(con, table: str, name: str, new_code: str,
+                           username: str) -> None:
+    """若存在旧版且代码有变化则归档到 script_history。"""
+    old = con.execute(f"SELECT code, enabled FROM {table} WHERE name=?", (name,)).fetchone()
+    if old and old["code"] != new_code:
+        con.execute(
+            "INSERT INTO script_history (script_type, name, code, enabled, username) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (_TABLE_TO_SCRIPT_TYPE.get(table, table), name, old["code"],
+             old["enabled"], username),
+        )
+
+
 def _upsert_script(table: str, name: str, code: str, enabled: int = 1,
                    username: str = "") -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # 保存旧版本到历史记录（如果存在且代码有变化）
-    script_type = "precheck" if "precheck" in table else "process"
     with _conn() as con:
-        old = con.execute(f"SELECT code, enabled FROM {table} WHERE name=?", (name,)).fetchone()
-        if old and old["code"] != code:
-            con.execute(
-                "INSERT INTO script_history (script_type, name, code, enabled, username) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (script_type, name, old["code"], old["enabled"], username),
-            )
+        _record_script_history(con, table, name, code, username)
         con.execute(
             f"INSERT INTO {table} (name, code, enabled, created_at, updated_at) "
             f"VALUES (?, ?, ?, ?, ?) "
@@ -555,6 +587,46 @@ def upsert_process_script(name: str, code: str, enabled: int = 1,
 
 def delete_process_script(name: str) -> None:
     _delete_script("process_scripts", name)
+
+
+# -- option_callback_scripts 快捷方法 --
+def list_option_callback_scripts() -> List[Dict]:
+    return _list_scripts("option_callback_scripts")
+
+def get_option_callback_script(name: str) -> Optional[Dict]:
+    return _get_script("option_callback_scripts", name)
+
+def upsert_option_callback_script(name: str, code: str, enabled: int = 1,
+                                  enrich_applicant: int = 0,
+                                  token: str = "", encrypt_key: str = "",
+                                  username: str = "") -> None:
+    """option_callback_scripts 比 precheck/process 多 enrich_applicant/token/encrypt_key 三列，
+    单独维护，但仍走共享的 script_history 归档逻辑。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _conn() as con:
+        _record_script_history(con, "option_callback_scripts", name, code, username)
+        con.execute(
+            "INSERT INTO option_callback_scripts "
+            "(name, code, enabled, enrich_applicant, token, encrypt_key, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET "
+            "code=excluded.code, enabled=excluded.enabled, "
+            "enrich_applicant=excluded.enrich_applicant, "
+            "token=excluded.token, encrypt_key=excluded.encrypt_key, "
+            "updated_at=excluded.updated_at",
+            (name, code, enabled, enrich_applicant, token, encrypt_key, now, now),
+        )
+
+def delete_option_callback_script(name: str) -> None:
+    _delete_script("option_callback_scripts", name)
+
+def update_option_callback_script_last_request(name: str, request_json: str) -> None:
+    """记录最后一次飞书回调的请求数据，供调试面板回放。"""
+    with _conn() as con:
+        con.execute(
+            "UPDATE option_callback_scripts SET last_request=? WHERE name=?",
+            (request_json, name),
+        )
 
 
 # ---------------------------------------------------------------------------

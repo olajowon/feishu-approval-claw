@@ -45,10 +45,7 @@ def cleanup_old_groups() -> None:
         chat_id    = g["chat_id"]
         group_name = g.get("group_name", "")
         try:
-            from services.user_token import get_instance as _get_utm
-            mgr = _get_utm()
-            user_token = (mgr._access_token if mgr else "") or ""
-            dissolve_group(chat_id, user_token=user_token)
+            dissolve_group(chat_id)
             dissolve_proc_task_by_chat(chat_id)
             logger.info("[scheduler] 已解散群：%s (chat_id=%s)", group_name, chat_id)
         except Exception as exc:

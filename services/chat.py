@@ -19,11 +19,45 @@ if TYPE_CHECKING:
 
 from config import FEISHU_HOST, FORM_FIELD_NAME, WORKER_BOT_ADMIN_ID
 import services.lark_client as _lark_client
+import services.user_token as _user_token
+from services.user_token import TOKEN_EXPIRED_CODES
 
 logger = logging.getLogger(__name__)
 
 _FEISHU_HOST = FEISHU_HOST  # 保持向后兼容
 
+
+def _create_chat_with_token(
+    token: str,
+    group_name: str,
+    user_open_ids: List[str],
+    bot_app_ids: List[str],
+    owner_id: str,
+) -> tuple[Optional[str], int, dict]:
+    """用户身份 HTTP POST /open-apis/im/v1/chats，返回 (chat_id 或 None, code, 完整响应 dict)。"""
+    body: dict = {"name": group_name}
+    if owner_id:
+        body["owner_id"] = owner_id
+    if user_open_ids:
+        body["user_id_list"] = user_open_ids
+    if bot_app_ids:
+        body["bot_id_list"] = bot_app_ids
+    params: dict = {"user_id_type": "open_id"}
+    if owner_id:
+        params["set_bot_manager"] = "true"
+    try:
+        resp = requests.post(
+            f"{_FEISHU_HOST}/open-apis/im/v1/chats",
+            params=params,
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json; charset=utf-8"},
+            json=body, timeout=15,
+        ).json()
+    except Exception as exc:
+        return None, -1, {"code": -1, "msg": f"HTTP 请求异常: {exc}"}
+    code = resp.get("code", -1)
+    chat_id = (resp.get("data") or {}).get("chat_id") if code == 0 else None
+    return chat_id, code, resp
 
 
 def create_group(
@@ -39,8 +73,25 @@ def create_group(
     - owner_id：     群主 open_id，不传则默认为创建者（通常是 bot）
     - set_bot_manager：指定了 owner_id 时，是否同时把创建群的机器人设为管理员
       （对应接口查询参数 set_bot_manager）
+
+    策略：UserTokenManager 单例有有效 user_token 时优先以用户身份建群，
+    绕开 bot 身份拉智能体机器人入群被服务端拒为 2200 的限制；失败再回退 bot 身份。
     Returns chat_id
     """
+    token_mgr = _user_token.get_instance()
+    if token_mgr is not None and token_mgr.get_access_token():
+        chat_id, code, resp = _create_chat_with_token(
+            token_mgr.get_access_token(), group_name, user_open_ids, bot_app_ids, owner_id,
+        )
+        if chat_id is None and code in TOKEN_EXPIRED_CODES:
+            chat_id, code, resp = _create_chat_with_token(
+                token_mgr.handle_expired(), group_name, user_open_ids, bot_app_ids, owner_id,
+            )
+        if chat_id is not None:
+            logger.info("群组已创建(用户身份)：%s (chat_id=%s)", group_name, chat_id)
+            return chat_id
+        logger.warning("用户身份建群失败 [%s]: %s，回退 bot 身份", code, resp)
+
     client = _lark_client.get_instance()
     body_builder = (
         CreateChatRequestBody.builder()
@@ -67,7 +118,7 @@ def create_group(
         raise RuntimeError(f"创建群组失败 [{response.code}]: {response.msg}")
 
     chat_id: str = response.data.chat_id
-    logger.info("群组已创建：%s (chat_id=%s)", group_name, chat_id)
+    logger.info("群组已创建(bot 身份)：%s (chat_id=%s)", group_name, chat_id)
     return chat_id
 
 
@@ -195,45 +246,50 @@ def send_process_notification(
 # 群管理
 # ---------------------------------------------------------------------------
 
-def dissolve_group(chat_id: str, user_token: str = "", bot_open_id: str = "") -> None:
+def _delete_chat_with_token(token: str, chat_id: str) -> tuple[bool, int, dict]:
+    """用户身份 HTTP DELETE /open-apis/im/v1/chats/{chat_id}，返回 (是否成功, code, 完整响应 dict)。"""
+    try:
+        resp = requests.delete(
+            f"{_FEISHU_HOST}/open-apis/im/v1/chats/{chat_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        ).json()
+    except Exception as exc:
+        return False, -1, {"code": -1, "msg": f"HTTP 请求异常: {exc}"}
+    code = resp.get("code", -1)
+    return code == 0, code, resp
+
+
+def dissolve_group(chat_id: str) -> None:
     """
     解散（删除）群组。
 
-    策略：
-      1. 先用 lark_client（tenant_access_token）调 SDK DELETE
-         - 新建群机器人是 creator，有权直接删除
-      2. 若 SDK 返回 232017（无权限）且有 user_token：改用 user_token HTTP DELETE
-         （对旧群，群主是人工帐号时的兼容方案）
+    策略（与 create_group 对称）：
+      1. UserTokenManager 单例有有效 user_token 时优先以用户身份 HTTP DELETE
+         —— 新链路群主就是该用户，有权直接删；token 过期自动刷新重试一次
+      2. 否则 / 用户身份失败，回退 SDK DELETE（tenant_access_token）
+         —— 旧链路 bot 是 creator 时仍可删
     """
+    token_mgr = _user_token.get_instance()
+    if token_mgr is not None and token_mgr.get_access_token():
+        ok, code, resp = _delete_chat_with_token(token_mgr.get_access_token(), chat_id)
+        if not ok and code in TOKEN_EXPIRED_CODES:
+            ok, code, resp = _delete_chat_with_token(token_mgr.handle_expired(), chat_id)
+        if ok:
+            logger.info("群已解散(用户身份) chat_id=%s", chat_id)
+            return
+        if code == 232009:
+            return  # 群已不存在
+        logger.warning("用户身份解散群失败 [%s]: %s，回退 bot 身份", code, resp)
+
     client = _lark_client.get_instance()
-    logger.info("dissolve_group: SDK DELETE chat_id=%s", chat_id)
     response = client.im.v1.chat.delete(
         DeleteChatRequest.builder().chat_id(chat_id).build()
     )
     if response.success():
-        logger.info("群已解散(SDK) chat_id=%s", chat_id)
+        logger.info("群已解散(bot 身份) chat_id=%s", chat_id)
         return
-
-    code = response.code
-    if code == 232009:
+    if response.code == 232009:
         return  # 群已不存在
-
-    if code != 232017 or not user_token:
-        raise RuntimeError(f"解散群失败 [{code}]: {response.msg}")
-
-    # SDK 232017（机器人非 creator/管理员）且有 user_token：HTTP 降级
-    logger.info("dissolve_group: SDK 无权，尝试 user_token DELETE chat_id=%s", chat_id)
-    r = requests.delete(
-        f"{FEISHU_HOST}/open-apis/im/v1/chats/{chat_id}",
-        headers={"Authorization": f"Bearer {user_token}"},
-        timeout=10,
-    )
-    if r.status_code in (200, 204):
-        logger.info("群已解散(user_token fallback) chat_id=%s", chat_id)
-        return
-    try:
-        body = r.json()
-        raise RuntimeError(f"解散群失败 [{body.get('code')}]: {body.get('msg')}")
-    except (ValueError, AttributeError):
-        raise RuntimeError(f"解散群失败 HTTP {r.status_code}: {r.text[:200]}")
+    raise RuntimeError(f"解散群失败 [{response.code}]: {response.msg}")
 

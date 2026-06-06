@@ -141,6 +141,14 @@ CONFIG_META: list[tuple[str, str, str, bool]] = [
      "告警 Webhook 地址。预检查或处理流程发生错误时，系统向此飞书机器人 Webhook 推送告警消息；留空则不推送。",
      "Alert Webhook URL. When pre-check or processing errors occur, the system sends alerts to this Lark bot Webhook. Leave empty to disable.",
      False),
+    ("PUBLIC_DOMAIN",
+     "本服务对外可访问的域名（含协议），用于在管理后台展示飞书审批「外部选项」控件应配置的回调 URL。"
+     "例如 <code>https://approval.example.com</code>；留空时管理页显示占位符 <code>{{PUBLIC_DOMAIN}}</code>。"
+     "仅影响展示，不影响实际回调匹配。",
+     "Public-facing domain of this service (with scheme), used in the admin page to display the callback URL "
+     "to configure in Lark approval external option controls, e.g. <code>https://approval.example.com</code>. "
+     "Leave empty to show the literal placeholder <code>{{PUBLIC_DOMAIN}}</code>. Display-only.",
+     False),
 ]
 
 
@@ -183,8 +191,9 @@ def _parse_accounts(raw: str) -> dict[str, str]:
 
 ACCOUNTS: dict[str, str] = _parse_accounts(os.environ.get("ACCOUNTS", ""))
 
-# == 告警 Webhook =============================================================
+# == 运维配置 =================================================================
 ALERT_WEBHOOK = _cfg("ALERT_WEBHOOK", "")
+PUBLIC_DOMAIN = _cfg("PUBLIC_DOMAIN", "")
 
 # == 群管理 ====================================================================
 GROUP_TTL_DAYS = int(_cfg("GROUP_TTL_DAYS", "3"))

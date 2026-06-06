@@ -134,6 +134,12 @@ _ADMIN_CSS = (
     '    .notice-warn { background:#fff7e6; border:1px solid #ffd591; color:#8d5b00; border-radius:8px; padding:12px 14px; margin-bottom:16px; font-size:13px; line-height:1.8; }\n'
     '    .CodeMirror { height:100%; width:100%; max-width:100%; font-size:13px; font-family:"Menlo","Consolas",monospace; background:#fafafa; }\n'
     '    .CodeMirror-gutters { background:#f7f7f7; border-right:1px solid #e5e5e5; }\n'
+    '    /* iOS 风格 toggle 开关（用于选项回调脚本的「富化 applicant」等） */\n'
+    '    .toggle-slider { position:absolute;inset:0;background:#ccc;border-radius:8px;transition:.2s; }\n'
+    '    .toggle-slider:before { content:"";position:absolute;width:12px;height:12px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s; }\n'
+    '    input:checked + .toggle-slider { background:#1a73e8; }\n'
+    '    input:checked + .toggle-slider:before { transform:translateX(12px); }\n'
+    '    .enrich-tip { display:none;position:fixed;background:#222;color:#fff;font-size:12px;font-weight:400;line-height:1.7;padding:10px 14px;border-radius:6px;width:340px;white-space:normal;z-index:99999;box-shadow:0 2px 8px rgba(0,0,0,.3);pointer-events:none; }\n'
     '    /* 响应式：移动端侧边栏折叠 */\n'
     '    @media (max-width: 768px) {\n'
     '      .sidebar { width:56px; }\n'
@@ -348,6 +354,11 @@ def _page_shell(active: str, token_h: str, body: str, is_admin: bool = True,
             '<circle cx="12.5" cy="10.5" r="3" fill="none" stroke="currentColor" stroke-width="1.3"/>'
             '<polyline points="11,10.5 12.2,11.7 14.5,9" fill="none" stroke="currentColor" stroke-width="1.3" '
             'stroke-linecap="round" stroke-linejoin="round"/></svg>',
+        "option-callback-scripts":
+            '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M2.5 4.5h11M2.5 8h8M2.5 11.5h6"/>'
+            '<path d="M12 10l2.5 2.5L12 15" /></svg>',
         "settings":
             '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">'
             '<path d="M7.5 1l-.4 2c-.4.1-.8.3-1.1.6l-1.9-.8-1.5 1.5.8 1.9c-.3.3-.5.7-.6 1.1l-2 .4v2.1l2 .4'
@@ -370,14 +381,15 @@ def _page_shell(active: str, token_h: str, body: str, is_admin: bool = True,
             '<path d="M5 8h6M8 6v4" stroke-linejoin="round"/></svg>',
     }
     _tab_key_to_i18n = {
-        "process-records":  "nav.process_records",
-        "precheck-records": "nav.precheck_records",
-        "process-scripts":  "nav.process_scripts",
-        "precheck-scripts": "nav.precheck_scripts",
-        "envvars":          "nav.envvars",
-        "settings":         "nav.settings",
-        "logs":             "nav.logs",
-        "about":            "nav.about",
+        "process-records":         "nav.process_records",
+        "precheck-records":        "nav.precheck_records",
+        "process-scripts":         "nav.process_scripts",
+        "precheck-scripts":        "nav.precheck_scripts",
+        "option-callback-scripts": "nav.option_callback_scripts",
+        "envvars":                 "nav.envvars",
+        "settings":                "nav.settings",
+        "logs":                    "nav.logs",
+        "about":                   "nav.about",
     }
     tabs = [
         (key, t(i18n_key, lang), f"/admin/{key}")
@@ -758,6 +770,7 @@ def _render_settings_page(current_user: str = "", lang: str = "zh") -> str:
         'WORKER_BOT_ADMIN_ID': 'feishu_group',
         'GROUP_TTL_DAYS': 'feishu_group',
         'ALERT_WEBHOOK': 'ops',
+        'PUBLIC_DOMAIN': 'ops',
     }
     rows = []
     _last_section = None
@@ -1640,6 +1653,563 @@ def _render_scripts_page(script_type: str, is_admin: bool = True, current_user: 
 
 
 # ---------------------------------------------------------------------------
+# 选项回调脚本管理页 — 为飞书审批「外部选项」控件提供数据源的脚本编辑/调试
+# ---------------------------------------------------------------------------
+
+def _render_option_callback_scripts_page(is_admin: bool = True,
+                                         current_user: str = "",
+                                         lang: str = "zh") -> str:
+    """渲染选项回调脚本管理页。"""
+    from services.db import list_option_callback_scripts
+    from config import PUBLIC_DOMAIN
+
+    scripts = list_option_callback_scripts()
+    tab_key = "option-callback-scripts"
+    api_prefix = "/api/option-callback-scripts"
+    cb_base = (PUBLIC_DOMAIN or "").rstrip("/")
+
+    # -- 模板代码 --
+    _tpl = (
+        'def query(applicant: dict, form: dict, page: int, query: str, locale: str):\n'
+        '    """\n'
+        '    飞书审批「外部选项」控件回调。\n'
+        '\n'
+        '    Parameters\n'
+        '    ----------\n'
+        '    applicant : dict\n'
+        '        发起人信息。\n'
+        '        关闭「富化 applicant」: 仅含 user_id\n'
+        '        开启「富化 applicant」: 含 name, email, mobile, open_id 等完整字段\n'
+        '    form      : dict - 联动字段 {字段代码: 被联动控件值}（无联动时为空 dict）\n'
+        '    page      : int  - 页码（从 1 开始）\n'
+        '    query     : str  - 用户输入的搜索关键词\n'
+        '    locale    : str  - 语言环境 zh_cn / en_us / ja_jp\n'
+        '\n'
+        '    Returns\n'
+        '    -------\n'
+        '    (options_list, has_next_page)\n'
+        '        options_list: [{"value": "显示文本", "is_default": True/False}, ...]\n'
+        '        has_next_page: bool\n'
+        '    """\n'
+        '    # 环境变量示例：api_key = ENV.get("MY_API_KEY", "")\n'
+        '\n'
+        '    all_options = [\n'
+        '        {"value": "选项一"},\n'
+        '        {"value": "选项二"},\n'
+        '    ]\n'
+        '    if query:\n'
+        '        all_options = [o for o in all_options if query in o["value"]]\n'
+        '\n'
+        '    return all_options, False\n'
+    )
+    tpl_js = json.dumps(_tpl)
+
+    # -- 编写指南 --
+    if lang == "en":
+        guide_html = (
+            '<details style="margin-bottom:16px;background:#fff;border-radius:8px;padding:16px;'
+            'box-shadow:0 1px 4px rgba(0,0,0,.08)">'
+            '<summary style="cursor:pointer;font-weight:600;font-size:15px;color:#1a73e8">'
+            'Option Callback Script Guide</summary>'
+            '<div style="margin-top:12px;font-size:13px;line-height:1.9;color:#333">'
+
+            '<div style="background:#fef7e0;border-left:4px solid #e37400;padding:10px 14px;'
+            'border-radius:0 6px 6px 0;margin-bottom:14px">'
+            '<b>What is an option-callback script?</b><br>'
+            'A Lark approval form can include an "external option" control that POSTs to a configured callback URL '
+            'to fetch its option list. Scripts here back those controls (e.g. options from CMDB / DB / external API).'
+            '</div>'
+
+            '<h4 style="margin:8px 0 4px">① Trigger</h4>'
+            '<p>Lark POSTs to the callback URL when the form opens or when the user types in the search box.</p>'
+
+            '<h4 style="margin:12px 0 4px">② How a script is matched</h4>'
+            '<ol style="margin:4px 0 8px 20px;padding:0">'
+            '<li>Create a script here. The page shows the callback URL / Token / Key.</li>'
+            '<li>In Lark approval admin → edit definition → external-option control: paste them in.</li>'
+            '<li>Each request is routed by the <b>script name</b> in the URL path.</li>'
+            '</ol>'
+
+            '<h4 style="margin:12px 0 4px">③ Signature</h4>'
+            '<p>Must implement <code>query(applicant, form, page, query, locale)</code> and return '
+            '<code>(options_list, has_next_page)</code>. Each option must contain <code>value</code>; '
+            '<code>is_default</code> is optional.</p>'
+
+            '<h4 style="margin:12px 0 4px">④ Notes</h4>'
+            '<ul style="margin:4px 0 4px 20px;padding:0">'
+            '<li>Lark enforces a 3 s timeout — keep the script fast.</li>'
+            '<li>Read env vars via <code>ENV.get("KEY", "")</code>.</li>'
+            '<li>The last live request is recorded and can be replayed from the debug panel.</li>'
+            '</ul>'
+            '</div></details>'
+        )
+    else:
+        guide_html = (
+            '<details style="margin-bottom:16px;background:#fff;border-radius:8px;padding:16px;'
+            'box-shadow:0 1px 4px rgba(0,0,0,.08)">'
+            '<summary style="cursor:pointer;font-weight:600;font-size:15px;color:#1a73e8">'
+            '自定义选项回调脚本说明与编写指南</summary>'
+            '<div style="margin-top:12px;font-size:13px;line-height:1.9;color:#333">'
+
+            '<div style="background:#fef7e0;border-left:4px solid #e37400;padding:10px 14px;'
+            'border-radius:0 6px 6px 0;margin-bottom:14px">'
+            '<b>什么是自定义选项回调脚本？</b><br>'
+            '飞书审批表单中的「外部选项」控件，会向配置的回调 URL 发起 POST 请求获取选项列表。'
+            '通过编写脚本，可为不同的外部选项控件提供动态的数据源（如从 CMDB、数据库、外部 API 中查询）。'
+            '</div>'
+
+            '<h4 style="margin:8px 0 4px">① 触发时机</h4>'
+            '<p>用户打开表单或在外部选项控件中输入搜索词时，飞书向配置的回调 URL 发起 POST 请求。</p>'
+
+            '<h4 style="margin:12px 0 4px">② 脚本如何被匹配</h4>'
+            '<ol style="margin:4px 0 8px 20px;padding:0">'
+            '<li>在本页新建脚本，页面自动展示回调 URL、Token、Key</li>'
+            '<li>到飞书审批后台 → 编辑审批定义 → 外部选项控件，将列表中的回调 URL、Token、Key 填入</li>'
+            '<li>飞书发起请求时，系统按 URL 中的<b>脚本名称</b>匹配并执行对应脚本</li>'
+            '</ol>'
+            '<p style="font-size:12px;color:#666;margin:4px 0 8px">'
+            '例如：回调 URL 为 <code>/api/option-callback/<b>主机列表</b></code>，则匹配名称为「主机列表」的脚本。</p>'
+
+            '<h4 style="margin:12px 0 4px">③ 函数签名与返回值</h4>'
+            '<p>必须实现：<code>query(applicant, form, page, query, locale)</code>，'
+            '返回 <code>(options_list, has_next_page)</code>。'
+            '每项必须包含 <code>value</code>（显示文本），<code>is_default</code> 可选（True 为默认选中）。</p>'
+
+            '<h4 style="margin:12px 0 4px">④ 参数说明</h4>'
+            '<table style="font-size:12px;border-collapse:collapse;width:100%;margin:6px 0 10px">'
+            '<tr style="background:#f5f5f5">'
+            '<th style="text-align:left;padding:4px 8px">参数</th>'
+            '<th style="text-align:left;padding:4px 8px">类型</th>'
+            '<th style="text-align:left;padding:4px 8px">说明</th></tr>'
+            '<tr><td style="padding:4px 8px"><code>applicant</code></td><td style="padding:4px 8px">dict</td>'
+            '<td style="padding:4px 8px">发起人。默认仅含 user_id；开启「富化 applicant」后含 name/email/mobile/open_id 等</td></tr>'
+            '<tr><td style="padding:4px 8px"><code>form</code></td><td style="padding:4px 8px">dict</td>'
+            '<td style="padding:4px 8px">联动字段 <code>{字段代码: 值}</code>，无联动时为空 dict</td></tr>'
+            '<tr><td style="padding:4px 8px"><code>page</code></td><td style="padding:4px 8px">int</td>'
+            '<td style="padding:4px 8px">页码，从 1 开始</td></tr>'
+            '<tr><td style="padding:4px 8px"><code>query</code></td><td style="padding:4px 8px">str</td>'
+            '<td style="padding:4px 8px">用户输入的搜索关键词</td></tr>'
+            '<tr><td style="padding:4px 8px"><code>locale</code></td><td style="padding:4px 8px">str</td>'
+            '<td style="padding:4px 8px">语言环境：zh_cn / en_us / ja_jp</td></tr>'
+            '</table>'
+
+            '<h4 style="margin:12px 0 4px">⑤ 环境变量（ENV）</h4>'
+            '<p>在「<a href="/admin/envvars" style="color:#1a73e8">环境变量</a>」中配置的 KV 会作为 <code>ENV</code> 字典注入：'
+            '<code>api_key = ENV.get("MY_API_KEY", "")</code></p>'
+
+            '<h4 style="margin:12px 0 4px">⑥ 注意事项</h4>'
+            '<ul style="margin:4px 0 4px 20px;padding:0">'
+            '<li>飞书要求 3 秒内响应，确保查询逻辑高效</li>'
+            '<li>填入 Encrypt Key 时响应会按 AES-CBC 加密（与飞书官方实现兼容）</li>'
+            '<li>系统会记录每次真实调用的请求，可通过调试面板「填入最近一次调用记录」回放</li>'
+            '</ul>'
+            '</div></details>'
+        )
+
+    # -- 列表 --
+    _empty_label = "暂无脚本" if lang == "zh" else "No scripts"
+    _ph_url = "回调URL" if lang == "zh" else "Callback URL"
+    _ph_status = "状态" if lang == "zh" else "Status"
+    _ph_time = "更新时间" if lang == "zh" else "Updated"
+    _ph_action = "操作" if lang == "zh" else "Action"
+    _ph_name = "选项名称" if lang == "zh" else "Name"
+    _ph_enabled = "✓ 启用" if lang == "zh" else "✓ Enabled"
+    _ph_disabled = "✗ 禁用" if lang == "zh" else "✗ Disabled"
+    _ph_edit = "编辑" if lang == "zh" else "Edit"
+    _ph_delete = "删除" if lang == "zh" else "Delete"
+    _ph_add = "新增脚本" if lang == "zh" else "New Script"
+    _domain_placeholder = "{{PUBLIC_DOMAIN}}"
+
+    if not scripts:
+        table_rows = (
+            f'<tr><td colspan="7" style="text-align:center;color:#888;padding:24px">'
+            f'{_empty_label}</td></tr>'
+        )
+    else:
+        trs = []
+        for s in scripts:
+            esc_name = s["name"].replace('"', "&quot;").replace("'", "\\'")
+            api_path = f'/api/option-callback/{s["name"]}'
+            callback_url = f'{cb_base}{api_path}' if cb_base else f'{_domain_placeholder}{api_path}'
+            enabled_badge = (f'<span style="color:#1a7f3c">{_ph_enabled}</span>' if s["enabled"]
+                             else f'<span style="color:#d93025">{_ph_disabled}</span>')
+            _td_mono = 'style="font-size:12px;color:#555;font-family:monospace;word-break:break-all"'
+            trs.append(
+                f'<tr>'
+                f'<td style="font-weight:600">{s["name"]}</td>'
+                f'<td {_td_mono}>{callback_url}</td>'
+                f'<td {_td_mono}>{s.get("token") or ""}</td>'
+                f'<td {_td_mono}>{s.get("encrypt_key") or ""}</td>'
+                f'<td>{enabled_badge}</td>'
+                f'<td style="font-size:12px;color:#888">{s.get("updated_at") or "-"}</td>'
+                f'<td>'
+                f'<button class="btn-orange" onclick="editScript(\'{esc_name}\')">{_ph_edit}</button> '
+                f'<button class="btn-red" onclick="deleteScript(\'{esc_name}\')">{_ph_delete}</button>'
+                f'</td>'
+                f'</tr>'
+            )
+        table_rows = "\n".join(trs)
+
+    # -- 最近一次调用记录（供调试面板预填）--
+    last_call_data: dict[str, str] = {}
+    for s in scripts:
+        if s.get("last_request"):
+            last_call_data[s["name"]] = s["last_request"]
+    last_call_data_js = json.dumps(last_call_data, ensure_ascii=False)
+
+    body = (
+        guide_html +
+        '<div style="margin-bottom:16px">'
+        '<button onclick="newScript()" style="background:#1a73e8;color:#fff;border:none;'
+        'padding:6px 18px;border-radius:6px;cursor:pointer;font-size:13px;margin-bottom:10px">'
+        f'{_ph_add}</button>'
+        '</div>'
+        '<table><thead><tr>'
+        f'<th>{_ph_name}</th><th>{_ph_url}</th><th>Token</th><th>Key</th>'
+        f'<th>{_ph_status}</th><th>{_ph_time}</th><th>{_ph_action}</th>'
+        '</tr></thead><tbody>'
+        + table_rows +
+        '</tbody></table>'
+
+        # ── 编辑 + 调试 模态框（参考 aiops_puton）──
+        '<div id="editModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);'
+        'z-index:9999;align-items:center;justify-content:center">'
+        '<div style="background:#fff;border-radius:10px;width:96%;max-width:1400px;height:90vh;'
+        'display:flex;flex-direction:column;position:relative;overflow:hidden">'
+        # 顶栏
+        '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px;'
+        'border-bottom:1px solid #eee;flex-shrink:0">'
+        f'<h3 id="modalTitle" style="margin:0;font-size:16px">{t("scripts.modal_edit", lang)}</h3>'
+        '<div style="display:flex;align-items:center;gap:16px">'
+        '<label style="font-size:13px;display:flex;align-items:center;gap:4px">'
+        f'<input id="scriptEnabled" type="checkbox" checked> {t("scripts.enable_label", lang)}</label>'
+        '<button onclick="saveScript()" style="background:#1a73e8;color:#fff;border:none;'
+        f'padding:6px 20px;border-radius:6px;cursor:pointer;font-size:13px">{t("scripts.save", lang)}</button>'
+        '<button onclick="loadHistory()" style="background:#6c757d;color:#fff;border:none;'
+        f'padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px">{t("scripts.history", lang)}</button>'
+        '<button onclick="closeEditModal()" style="background:#888;color:#fff;border:none;'
+        f'padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px">{t("scripts.close", lang)}</button>'
+        '</div></div>'
+        # 元数据行：选项名称 + Token (readonly + 刷新) + Key (readonly + 刷新)
+        '<div style="padding:10px 24px;border-bottom:1px solid #f0f0f0;flex-shrink:0;display:flex;'
+        'align-items:center;gap:12px;flex-wrap:wrap">'
+        '<label style="font-size:13px;white-space:nowrap;font-weight:600">选项名称</label>'
+        '<input id="scriptName" style="width:300px;border:1px solid #ccc;border-radius:4px;'
+        'padding:5px 10px;font-size:14px">'
+        '<label style="font-size:13px;white-space:nowrap;font-weight:600">Token</label>'
+        '<div style="display:flex;align-items:center;gap:4px">'
+        '<input id="scriptToken" style="width:380px;border:1px solid #ccc;border-radius:4px;'
+        'padding:5px 10px;font-size:13px;font-family:monospace;background:#f5f5f5" readonly>'
+        '<button id="btnRandomToken" type="button" onclick="randomToken()" title="重新生成" '
+        'style="background:none;border:none;cursor:pointer;padding:2px;color:#888">'
+        '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" '
+        'stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.17"/>'
+        '<polyline points="13,1 13,4.5 9.5,4.5"/><path d="M14.5 8a6.5 6.5 0 0 1-11.48 4.17"/>'
+        '<polyline points="3,15 3,11.5 6.5,11.5"/></svg></button>'
+        '</div>'
+        '<label style="font-size:13px;white-space:nowrap;font-weight:600">Key</label>'
+        '<div style="display:flex;align-items:center;gap:4px">'
+        '<input id="scriptEncryptKey" style="width:380px;border:1px solid #ccc;border-radius:4px;'
+        'padding:5px 10px;font-size:13px;font-family:monospace;background:#f5f5f5" placeholder="可选" readonly>'
+        '<button id="btnRandomKey" type="button" onclick="randomKey()" title="重新生成" '
+        'style="background:none;border:none;cursor:pointer;padding:2px;color:#888">'
+        '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" '
+        'stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.17"/>'
+        '<polyline points="13,1 13,4.5 9.5,4.5"/><path d="M14.5 8a6.5 6.5 0 0 1-11.48 4.17"/>'
+        '<polyline points="3,15 3,11.5 6.5,11.5"/></svg></button>'
+        '</div>'
+        '</div>'
+        # 左右两栏主体
+        '<div style="display:flex;flex:1;overflow:hidden">'
+        # 左栏：代码编辑器 + 富化 applicant toggle（标题栏右侧）
+        '<div style="flex:1;display:flex;flex-direction:column;border-right:1px solid #eee;min-width:0;overflow:hidden">'
+        '<div style="padding:8px 16px;border-bottom:1px solid #f5f5f5;font-size:13px;font-weight:600;'
+        'color:#555;flex-shrink:0;display:flex;align-items:center;justify-content:space-between">'
+        '<span>代码编辑器</span>'
+        '<label class="enrich-label" style="font-size:13px;font-weight:600;display:flex;align-items:center;'
+        'gap:6px;cursor:pointer;color:#333;position:relative">'
+        '<span style="position:relative;display:inline-block;width:28px;height:16px">'
+        '<input id="scriptEnrich" type="checkbox" style="opacity:0;width:0;height:0;position:absolute">'
+        '<span class="toggle-slider"></span></span>富化 applicant'
+        '<span class="enrich-tip">关闭：applicant 仅含 user_id<br>'
+        '开启：调用飞书 API 查询申请人详情，applicant 额外包含 name、email、mobile、open_id 等<br><br>'
+        '何时开启：脚本需要根据「谁在发起」返回不同选项时</span>'
+        '</label></div>'
+        '<textarea id="scriptCode" style="flex:1;width:100%;border:none;font-family:\'Menlo\',\'Consolas\',monospace;'
+        'font-size:13px;line-height:1.5;padding:12px 16px;tab-size:4;white-space:pre;overflow:auto;resize:none;'
+        'outline:none;background:#fafafa;box-sizing:border-box"></textarea>'
+        '</div>'
+        # 右栏：调试面板
+        '<div style="width:440px;flex-shrink:0;display:flex;flex-direction:column;overflow:hidden">'
+        '<div style="padding:8px 16px;border-bottom:1px solid #f5f5f5;font-size:13px;font-weight:600;'
+        'color:#555;flex-shrink:0">调试面板</div>'
+        '<div style="flex:1;overflow-y:auto;padding:12px 16px">'
+        '<button onclick="fillLastCall()" style="background:#f5f5f5;color:#333;border:1px solid #ccc;'
+        'padding:5px 14px;border-radius:4px;cursor:pointer;font-size:12px;margin-bottom:10px;width:100%">'
+        '填入最近一次调用记录</button>'
+        # applicant
+        '<div style="margin-bottom:10px">'
+        '<label style="font-size:12px;color:#666">applicant (JSON) '
+        '<span id="enrichHint" style="color:#aaa;display:none">— 自动富化</span></label>'
+        '<textarea id="dbgApplicant" rows="7" style="width:100%;font-family:monospace;font-size:11px;'
+        'border:1px solid #ccc;border-radius:4px;padding:6px;margin-top:3px;box-sizing:border-box;resize:vertical">{}</textarea>'
+        '</div>'
+        # form
+        '<div style="margin-bottom:10px">'
+        '<label style="font-size:12px;color:#666">form (JSON) <span style="color:#aaa">— 联动字段</span></label>'
+        '<textarea id="dbgForm" rows="7" style="width:100%;font-family:monospace;font-size:11px;'
+        'border:1px solid #ccc;border-radius:4px;padding:6px;margin-top:3px;box-sizing:border-box;resize:vertical">{}</textarea>'
+        '</div>'
+        # page + query + locale 同行
+        '<div style="margin-bottom:10px;display:flex;gap:8px">'
+        '<div style="flex:1">'
+        '<label style="font-size:12px;color:#666">page</label>'
+        '<input id="dbgPage" type="number" value="1" style="width:100%;border:1px solid #ccc;border-radius:4px;'
+        'padding:5px 8px;font-size:12px;margin-top:3px;box-sizing:border-box">'
+        '</div>'
+        '<div style="flex:2">'
+        '<label style="font-size:12px;color:#666">query（搜索词）</label>'
+        '<input id="dbgQuery" style="width:100%;border:1px solid #ccc;border-radius:4px;'
+        'padding:5px 8px;font-size:12px;margin-top:3px;box-sizing:border-box">'
+        '</div>'
+        '<div style="flex:1">'
+        '<label style="font-size:12px;color:#666">locale</label>'
+        '<select id="dbgLocale" style="width:100%;border:1px solid #ccc;border-radius:4px;'
+        'padding:5px 8px;font-size:12px;margin-top:3px;box-sizing:border-box">'
+        '<option value="zh_cn">zh_cn</option><option value="en_us">en_us</option></select>'
+        '</div>'
+        '</div>'
+        # 执行按钮
+        '<button onclick="runDebug()" style="background:#1a73e8;color:#fff;border:none;padding:7px 20px;'
+        'border-radius:6px;cursor:pointer;font-size:13px;margin-bottom:10px;width:100%">'
+        '执行调试（使用编辑器中的代码）</button>'
+        # 输出
+        '<pre id="debugOutput" style="background:#1d2129;color:#e6e6e6;border-radius:6px;padding:12px;'
+        'font-size:12px;white-space:pre-wrap;word-break:break-all;min-height:120px;max-height:100%;overflow:auto">'
+        '等待执行……</pre>'
+        '</div></div>'
+        '</div>'
+        '</div></div>'
+
+        # ── JavaScript ──
+        '<script>\n'
+        f'const API = "{api_prefix}";\n'
+        f'const TEMPLATE = {tpl_js};\n'
+        f'const LAST_CALL_DATA = {last_call_data_js};\n'
+        'let _editingOld = "";\n'
+        'let _scriptEditor = null;\n'
+        'function ensureScriptEditor() {\n'
+        '  if (_scriptEditor) return _scriptEditor;\n'
+        '  const ta = document.getElementById("scriptCode");\n'
+        '  if (!ta || !window.CodeMirror) return null;\n'
+        '  _scriptEditor = CodeMirror.fromTextArea(ta, {\n'
+        '    mode: "python", theme: "eclipse", lineNumbers: true,\n'
+        '    indentUnit: 4, tabSize: 4, matchBrackets: true, lineWrapping: false\n'
+        '  });\n'
+        '  _scriptEditor.setSize("100%", "100%");\n'
+        '  return _scriptEditor;\n'
+        '}\n'
+        'function setScriptCode(v) {\n'
+        '  const ed = ensureScriptEditor();\n'
+        '  if (ed) { ed.setValue(v || ""); ed.clearHistory(); setTimeout(() => ed.refresh(), 0); }\n'
+        '  else { document.getElementById("scriptCode").value = v || ""; }\n'
+        '}\n'
+        'function getScriptCode() {\n'
+        '  const ed = ensureScriptEditor();\n'
+        '  return ed ? ed.getValue() : document.getElementById("scriptCode").value;\n'
+        '}\n'
+        # 富化 toggle 的 tooltip 跟随 + 自动富化提示
+        '(function(){\n'
+        '  const label = document.querySelector(".enrich-label");\n'
+        '  const tip = document.querySelector(".enrich-tip");\n'
+        '  if(!label||!tip) return;\n'
+        '  label.addEventListener("mouseenter", function(){\n'
+        '    const r = label.getBoundingClientRect();\n'
+        '    tip.style.top = (r.bottom + 6) + "px";\n'
+        '    tip.style.right = (window.innerWidth - r.right) + "px";\n'
+        '    tip.style.display = "block";\n'
+        '  });\n'
+        '  label.addEventListener("mouseleave", function(){ tip.style.display = "none"; });\n'
+        '})();\n'
+        'document.getElementById("scriptEnrich").addEventListener("change", function(){\n'
+        '  document.getElementById("enrichHint").style.display = this.checked ? "inline" : "none";\n'
+        '});\n'
+        # 随机生成 token / key —— 使用 crypto.getRandomValues 提供加密强度
+        'function _randomHex(len) {\n'
+        '  const arr = new Uint8Array(len);\n'
+        '  crypto.getRandomValues(arr);\n'
+        '  return Array.from(arr, b => b.toString(16).padStart(2, "0")).join("");\n'
+        '}\n'
+        'function randomToken() { document.getElementById("scriptToken").value = _randomHex(20); }\n'
+        'function randomKey()   { document.getElementById("scriptEncryptKey").value = _randomHex(16); }\n'
+        '\n'
+        'function _setTokenKeyEditable(editable) {\n'
+        '  const t = document.getElementById("scriptToken");\n'
+        '  const k = document.getElementById("scriptEncryptKey");\n'
+        '  t.readOnly = !editable; t.style.background = editable ? "" : "#f5f5f5";\n'
+        '  k.readOnly = !editable; k.style.background = editable ? "" : "#f5f5f5";\n'
+        '  document.getElementById("btnRandomToken").style.display = editable ? "" : "none";\n'
+        '  document.getElementById("btnRandomKey").style.display   = editable ? "" : "none";\n'
+        '}\n'
+        '\n'
+        'function _resetDebugFields() {\n'
+        '  document.getElementById("dbgApplicant").value = "{}";\n'
+        '  document.getElementById("dbgForm").value = "{}";\n'
+        '  document.getElementById("dbgPage").value = "1";\n'
+        '  document.getElementById("dbgQuery").value = "";\n'
+        '  document.getElementById("dbgLocale").value = "zh_cn";\n'
+        '}\n'
+        '\n'
+        'function newScript() {\n'
+        '  _editingOld = "";\n'
+        '  document.getElementById("modalTitle").textContent = _T["js.sc_modal_new"];\n'
+        '  document.getElementById("scriptName").value = "";\n'
+        '  document.getElementById("scriptName").disabled = false;\n'
+        '  document.getElementById("scriptEnabled").checked = true;\n'
+        '  document.getElementById("scriptEnrich").checked = false;\n'
+        '  document.getElementById("enrichHint").style.display = "none";\n'
+        '  ensureScriptEditor();\n'
+        '  setScriptCode(TEMPLATE);\n'
+        '  document.getElementById("scriptToken").value = _randomHex(20);\n'
+        '  document.getElementById("scriptEncryptKey").value = "";\n'
+        '  _setTokenKeyEditable(true);\n'
+        '  document.getElementById("debugOutput").textContent = "等待执行……";\n'
+        '  _resetDebugFields();\n'
+        '  document.getElementById("editModal").style.display = "flex";\n'
+        '}\n'
+        '\n'
+        'async function editScript(name) {\n'
+        '  const r = await fetch(API + "/get?name=" + encodeURIComponent(name));\n'
+        '  const j = await r.json();\n'
+        '  if(!j.ok){ alert("加载失败: " + j.error); return; }\n'
+        '  _editingOld = name;\n'
+        '  document.getElementById("modalTitle").textContent = _T["js.sc_modal_edit"] + name;\n'
+        '  document.getElementById("scriptName").value = j.data.name;\n'
+        '  document.getElementById("scriptName").disabled = true;\n'
+        '  document.getElementById("scriptEnabled").checked = !!j.data.enabled;\n'
+        '  document.getElementById("scriptEnrich").checked = !!j.data.enrich_applicant;\n'
+        '  document.getElementById("enrichHint").style.display = j.data.enrich_applicant ? "inline" : "none";\n'
+        '  document.getElementById("scriptToken").value = j.data.token || "";\n'
+        '  document.getElementById("scriptEncryptKey").value = j.data.encrypt_key || "";\n'
+        '  _setTokenKeyEditable(false);\n'
+        '  ensureScriptEditor();\n'
+        '  setScriptCode(j.data.code);\n'
+        '  document.getElementById("debugOutput").textContent = "等待执行……";\n'
+        '  _resetDebugFields();\n'
+        '  document.getElementById("editModal").style.display = "flex";\n'
+        '}\n'
+        '\n'
+        'function closeEditModal() { document.getElementById("editModal").style.display = "none"; }\n'
+        '\n'
+        'async function saveScript() {\n'
+        '  const name = document.getElementById("scriptName").value.trim();\n'
+        '  if(!name){ alert("名称不能为空"); return; }\n'
+        '  const token = document.getElementById("scriptToken").value.trim();\n'
+        '  if(!token){ alert("Token 不能为空"); return; }\n'
+        '  const body = {\n'
+        '    name,\n'
+        '    code: getScriptCode(),\n'
+        '    enabled: document.getElementById("scriptEnabled").checked ? 1 : 0,\n'
+        '    enrich_applicant: document.getElementById("scriptEnrich").checked ? 1 : 0,\n'
+        '    token,\n'
+        '    encrypt_key: document.getElementById("scriptEncryptKey").value.trim()\n'
+        '  };\n'
+        '  const endpoint = _editingOld ? "/edit" : "/create";\n'
+        '  const r = await fetch(API + endpoint, {method:"POST",\n'
+        '    headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});\n'
+        '  const j = await r.json();\n'
+        '  if(j.ok){ alert("✓ 已保存"); location.reload(); }\n'
+        '  else { alert("✗ " + j.error); }\n'
+        '}\n'
+        '\n'
+        'async function deleteScript(name) {\n'
+        '  if(!confirm("确认删除脚本: " + name + "？")) return;\n'
+        '  const r = await fetch(API + "/delete", {method:"POST",\n'
+        '    headers:{"Content-Type":"application/json"}, body:JSON.stringify({name})});\n'
+        '  const j = await r.json();\n'
+        '  if(j.ok){ alert("✓ 已删除"); location.reload(); }\n'
+        '  else { alert("✗ " + j.error); }\n'
+        '}\n'
+        '\n'
+        'function fillLastCall() {\n'
+        '  const name = document.getElementById("scriptName").value.trim();\n'
+        '  if (!name || !LAST_CALL_DATA[name]) { alert("暂无该脚本的调用记录"); return; }\n'
+        '  try {\n'
+        '    const input = JSON.parse(LAST_CALL_DATA[name]);\n'
+        '    document.getElementById("dbgApplicant").value = JSON.stringify(input.applicant || {}, null, 2);\n'
+        '    document.getElementById("dbgForm").value = JSON.stringify(input.form || {}, null, 2);\n'
+        '    document.getElementById("dbgPage").value = input.page || 1;\n'
+        '    document.getElementById("dbgQuery").value = input.query || "";\n'
+        '    document.getElementById("dbgLocale").value = input.locale || "zh_cn";\n'
+        '  } catch(e) { alert("解析调用记录失败: " + e); }\n'
+        '}\n'
+        '\n'
+        'async function runDebug() {\n'
+        '  const code = getScriptCode();\n'
+        '  if(!code.trim()){ alert("代码不能为空"); return; }\n'
+        '  const scriptName = document.getElementById("scriptName").value.trim() || "untitled";\n'
+        '  let applicant, form;\n'
+        '  try { applicant = JSON.parse(document.getElementById("dbgApplicant").value); }\n'
+        '  catch(e){ alert("applicant JSON 格式错误"); return; }\n'
+        '  try { form = JSON.parse(document.getElementById("dbgForm").value); }\n'
+        '  catch(e){ alert("form JSON 格式错误"); return; }\n'
+        '  const params = {\n'
+        '    applicant, form,\n'
+        '    page_token: String(document.getElementById("dbgPage").value || "1"),\n'
+        '    query: document.getElementById("dbgQuery").value,\n'
+        '    locale: document.getElementById("dbgLocale").value\n'
+        '  };\n'
+        '  document.getElementById("debugOutput").textContent = "执行中……";\n'
+        '  try {\n'
+        '    const r = await fetch(API + "/debug", {method:"POST",\n'
+        '      headers:{"Content-Type":"application/json"}, body:JSON.stringify({\n'
+        '        script_name:scriptName, code, params,\n'
+        '        enrich_applicant: document.getElementById("scriptEnrich").checked ? 1 : 0\n'
+        '      })});\n'
+        '    const j = await r.json();\n'
+        '    let out = "";\n'
+        '    if(j.elapsed_ms !== undefined) {\n'
+        '      if(j.timeout_warning) out += "🔴 " + j.timeout_warning + "\\n\\n";\n'
+        '      else if(j.elapsed_ms > 2000) out += "🟡 耗时 " + j.elapsed_ms + "ms，接近飞书 3 秒超时限制\\n\\n";\n'
+        '      else out += "🟢 耗时 " + j.elapsed_ms + "ms（飞书要求 < 3000ms）\\n\\n";\n'
+        '    }\n'
+        '    if(j.error) out += "❌ 异常:\\n" + j.error + "\\n\\n";\n'
+        '    if(j.format_warning) out += "⚠️ " + j.format_warning + "\\n\\n";\n'
+        '    if(j.result !== undefined && j.result !== null) out += "📋 返回值:\\n" + JSON.stringify(j.result, null, 2) + "\\n\\n";\n'
+        '    if(j.stdout) out += "📤 stdout:\\n" + j.stdout + "\\n";\n'
+        '    if(j.stderr) out += "⚠️ stderr:\\n" + j.stderr + "\\n";\n'
+        '    if(!out) out = "✓ 执行完成（无输出）";\n'
+        '    document.getElementById("debugOutput").textContent = out;\n'
+        '  } catch(e) {\n'
+        '    document.getElementById("debugOutput").textContent = "❌ 请求失败: " + e;\n'
+        '  }\n'
+        '}\n'
+        '\n'
+        'async function loadHistory() {\n'
+        '  const name = document.getElementById("scriptName").value.trim();\n'
+        '  if(!name){ alert("先选中一条脚本"); return; }\n'
+        '  const r = await fetch(API+"/history",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});\n'
+        '  const j = await r.json();\n'
+        '  if(!j.ok){ alert("加载历史失败: "+j.error); return; }\n'
+        '  if(!j.data.length){ alert("暂无历史版本"); return; }\n'
+        '  let msg = "共 " + j.data.length + " 个历史版本，输入序号回滚：\\n";\n'
+        '  j.data.forEach((h,i)=>{ msg += (i+1) + ". [" + h.created_at + "] " + (h.username||"system") + "\\n"; });\n'
+        '  const idx = prompt(msg);\n'
+        '  if(!idx) return;\n'
+        '  const n = parseInt(idx)-1;\n'
+        '  if(isNaN(n)||n<0||n>=j.data.length){ alert("序号无效"); return; }\n'
+        '  if(!confirm("确认回滚到 " + j.data[n].created_at + "？")) return;\n'
+        '  const rr = await fetch(API+"/rollback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({history_id:j.data[n].id})});\n'
+        '  const jj = await rr.json();\n'
+        '  if(jj.ok){ alert("✓ 已回滚"); location.reload(); } else { alert("✗ "+jj.error); }\n'
+        '}\n'
+        '</script>\n'
+    )
+    return _page_shell(tab_key, _build_token_html(lang), body,
+                       is_admin=is_admin, current_user=current_user, lang=lang)
+
+
+# ---------------------------------------------------------------------------
 # FastAPI 应用
 # ---------------------------------------------------------------------------
 
@@ -1961,6 +2531,18 @@ async def admin_process_scripts(request: Request, user: str = Depends(_require_a
         return PlainTextResponse(f"Internal error: {e}", status_code=500)
 
 
+@app.get("/admin/option-callback-scripts")
+async def admin_option_callback_scripts(request: Request, user: str = Depends(_require_any)):
+    is_adm = _is_admin_user(request)
+    lang = _get_lang(request)
+    try:
+        html = _render_option_callback_scripts_page(is_admin=is_adm, current_user=user, lang=lang)
+        return HTMLResponse(html)
+    except Exception as e:
+        logger.error("渲染选项回调脚本页失败: %s", e)
+        return PlainTextResponse(f"Internal error: {e}", status_code=500)
+
+
 @app.get("/logout")
 async def logout(request: Request):
     lang = _get_lang(request)
@@ -1989,6 +2571,19 @@ async def get_script_api(request: Request, name: str = "",
     from services.db import get_precheck_script, get_process_script
     fn = get_precheck_script if script_type == "precheck" else get_process_script
     row = fn(name)
+    if not row:
+        return JSONResponse({"ok": False, "error": "脚本不存在"}, status_code=404)
+    return JSONResponse({"ok": True, "data": row})
+
+
+@app.get("/api/option-callback-scripts/get")
+async def get_option_callback_script_api(name: str = "",
+                                          user: str = Depends(_require_any)):
+    name = name.strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "缺少 name 参数"}, status_code=400)
+    from services.db import get_option_callback_script
+    row = get_option_callback_script(name)
     if not row:
         return JSONResponse({"ok": False, "error": "脚本不存在"}, status_code=404)
     return JSONResponse({"ok": True, "data": row})
@@ -2033,16 +2628,13 @@ async def api_settings_save(request: Request, user: str = Depends(_require_admin
 async def api_dissolve_group(chat_id: str, request: Request, user: str = Depends(_require_any)):
     from services.chat import dissolve_group
     from services.db import dissolve_proc_task_by_chat, get_proc_task_by_chat
-    from services.worker_bot import get_bot_open_id as _get_bot_open_id
     record = get_proc_task_by_chat(chat_id)
     if not record:
         return JSONResponse({"ok": False, "error": "群不存在"}, status_code=404)
     if record.get("is_dissolved"):
         return JSONResponse({"ok": False, "error": "群已经解散"}, status_code=400)
     try:
-        mgr = _user_token.get_instance()
-        user_token = (mgr._access_token if mgr else "") or ""
-        dissolve_group(chat_id, user_token=user_token, bot_open_id=_get_bot_open_id())
+        dissolve_group(chat_id)
         dissolve_proc_task_by_chat(chat_id)
         _log_admin_action(user, request, "dissolve_group",
                           f"chat_id={chat_id} group={record.get('group_name', '')}")
@@ -2248,6 +2840,108 @@ async def api_process_scripts(action: str, request: Request, user: str = Depends
         return await _handle_script_api("process", action, body, request, user)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+# -- POST /api/option-callback-scripts/{action} -------------------------------
+
+async def _handle_option_callback_script_api(action: str, body: dict,
+                                              request: Request, user: str):
+    from services.db import (
+        upsert_option_callback_script, delete_option_callback_script,
+        get_option_callback_script, list_script_history, get_script_history_item,
+    )
+
+    if action in ("create", "edit"):
+        name = (body.get("name") or "").strip()
+        code = body.get("code", "")
+        enabled = int(body.get("enabled", 1))
+        enrich_applicant = int(body.get("enrich_applicant", 0))
+        token = (body.get("token") or "").strip()
+        encrypt_key = (body.get("encrypt_key") or "").strip()
+        if not name:
+            return JSONResponse({"ok": False, "error": "名称不能为空"}, status_code=400)
+        if not token:
+            return JSONResponse({"ok": False, "error": "Token 不能为空"}, status_code=400)
+        if action == "create" and get_option_callback_script(name) is not None:
+            return JSONResponse(
+                {"ok": False, "error": f"脚本「{name}」已存在，请使用编辑功能修改"},
+                status_code=409)
+        upsert_option_callback_script(name, code, enabled, enrich_applicant,
+                                      token, encrypt_key, username=user)
+        _log_admin_action(user, request, f"option_callback_{action}", f"name={name}")
+        return JSONResponse({"ok": True})
+
+    elif action == "delete":
+        name = (body.get("name") or "").strip()
+        if not name:
+            return JSONResponse({"ok": False, "error": "名称不能为空"}, status_code=400)
+        delete_option_callback_script(name)
+        _log_admin_action(user, request, "option_callback_delete", f"name={name}")
+        return JSONResponse({"ok": True})
+
+    elif action == "debug":
+        from services.option_callback import debug_script
+        script_name = (body.get("script_name") or "debug").strip()
+        code = body.get("code", "")
+        params = body.get("params", {}) or {}
+        enrich = bool(body.get("enrich_applicant", False))
+        return JSONResponse(debug_script(script_name, code, params, enrich=enrich))
+
+    elif action == "history":
+        name = (body.get("name") or "").strip()
+        if not name:
+            return JSONResponse({"ok": False, "error": "缺少 name"}, status_code=400)
+        rows = list_script_history("option_callback", name)
+        return JSONResponse({"ok": True, "data": rows})
+
+    elif action == "rollback":
+        history_id = body.get("history_id")
+        if not history_id:
+            return JSONResponse({"ok": False, "error": "缺少 history_id"}, status_code=400)
+        item = get_script_history_item(int(history_id))
+        if not item:
+            return JSONResponse({"ok": False, "error": "历史记录不存在"}, status_code=404)
+        # 历史回滚仅恢复 code/enabled，token/encrypt_key/enrich_applicant 保持当前值
+        cur = get_option_callback_script(item["name"])
+        if not cur:
+            return JSONResponse({"ok": False, "error": "当前脚本不存在，无法回滚"}, status_code=404)
+        upsert_option_callback_script(
+            item["name"], item["code"], item["enabled"],
+            cur.get("enrich_applicant", 0),
+            cur.get("token", ""), cur.get("encrypt_key", ""),
+            username=user,
+        )
+        _log_admin_action(user, request, "option_callback_edit",
+                          f"rollback name={item['name']} from history_id={history_id}")
+        return JSONResponse({"ok": True})
+
+    else:
+        return PlainTextResponse("Not Found", status_code=404)
+
+
+@app.post("/api/option-callback-scripts/{action}")
+async def api_option_callback_scripts(action: str, request: Request,
+                                       user: str = Depends(_require_any)):
+    try:
+        body = await request.json()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"JSON 解析失败: {e}"}, status_code=400)
+    try:
+        return await _handle_option_callback_script_api(action, body, request, user)
+    except Exception as e:
+        logger.error("选项回调脚本操作失败 action=%s: %s", action, e)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+# -- POST /api/option-callback/{script_name} — 飞书外部选项控件回调入口（无需 Basic Auth）
+@app.post("/api/option-callback/{script_name}")
+async def api_option_callback(script_name: str, request: Request):
+    from services.option_callback import handle_callback
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return JSONResponse(handle_callback(script_name, body))
 
 
 # -- POST /api/envvars/{action} -----------------------------------------------

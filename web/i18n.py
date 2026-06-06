@@ -10,14 +10,15 @@ web/i18n.py — 国际化翻译模块。
 
 _ZH = {
     # ── 导航 ──
-    "nav.process_records":  "处理记录",
-    "nav.precheck_records": "预检查记录",
-    "nav.process_scripts":  "处理脚本",
-    "nav.precheck_scripts": "预检查脚本",
-    "nav.envvars":          "环境变量",
-    "nav.settings":         "系统配置",
-    "nav.logs":             "操作记录",
-    "nav.about":            "系统介绍",
+    "nav.process_records":         "处理记录",
+    "nav.precheck_records":        "预检查记录",
+    "nav.process_scripts":         "处理脚本",
+    "nav.precheck_scripts":        "预检查脚本",
+    "nav.option_callback_scripts": "选项回调脚本",
+    "nav.envvars":                 "环境变量",
+    "nav.settings":                "系统配置",
+    "nav.logs":                    "操作记录",
+    "nav.about":                   "系统介绍",
 
     # ── 页面外壳 ──
     "shell.title":          "飞书审批Claw管理后台",
@@ -247,6 +248,9 @@ _ZH = {
     "action.process_create": "新增处理脚本",
     "action.process_edit":   "编辑处理脚本",
     "action.process_delete": "删除处理脚本",
+    "action.option_callback_create": "新增选项回调脚本",
+    "action.option_callback_edit":   "编辑选项回调脚本",
+    "action.option_callback_delete": "删除选项回调脚本",
     "action.envvar_create":  "新增环境变量",
     "action.envvar_edit":    "修改环境变量",
     "action.envvar_delete":  "删除环境变量",
@@ -257,14 +261,15 @@ _ZH = {
 
 _EN = {
     # ── nav ──
-    "nav.process_records":  "Process Records",
-    "nav.precheck_records": "Precheck Records",
-    "nav.process_scripts":  "Process Scripts",
-    "nav.precheck_scripts": "Precheck Scripts",
-    "nav.envvars":          "Env Variables",
-    "nav.settings":         "Settings",
-    "nav.logs":             "Audit Log",
-    "nav.about":            "About",
+    "nav.process_records":         "Process Records",
+    "nav.precheck_records":        "Precheck Records",
+    "nav.process_scripts":         "Process Scripts",
+    "nav.precheck_scripts":        "Precheck Scripts",
+    "nav.option_callback_scripts": "Option Callback Scripts",
+    "nav.envvars":                 "Env Variables",
+    "nav.settings":                "Settings",
+    "nav.logs":                    "Audit Log",
+    "nav.about":                   "About",
 
     # ── shell ──
     "shell.title":          "Lark Approval Claw Admin",
@@ -457,7 +462,7 @@ _EN = {
     # ── scripts ──
     "scripts.title_precheck":  "Precheck Scripts",
     "scripts.title_process":   "Processing Scripts",
-    "scripts.add":             "Add Script",
+    "scripts.add":             "New Script",
     "scripts.th_subject":      "Subject",
     "scripts.th_status":       "Status",
     "scripts.th_time":         "Updated",
@@ -494,6 +499,9 @@ _EN = {
     "action.process_create": "Create Process Script",
     "action.process_edit":   "Edit Process Script",
     "action.process_delete": "Delete Process Script",
+    "action.option_callback_create": "Create Option Callback Script",
+    "action.option_callback_edit":   "Edit Option Callback Script",
+    "action.option_callback_delete": "Delete Option Callback Script",
     "action.envvar_create":  "Create Env Variable",
     "action.envvar_edit":    "Edit Env Variable",
     "action.envvar_delete":  "Delete Env Variable",
@@ -1088,7 +1096,7 @@ def scripts_guide_en(script_type: str) -> str:
             '<details style="margin-bottom:16px;background:#fff;border-radius:8px;padding:16px;'
             'box-shadow:0 1px 4px rgba(0,0,0,.08)">'
             '<summary style="cursor:pointer;font-weight:600;font-size:15px;color:#1a73e8">'
-            'Processing Script Guide</summary>'
+            'Process Script Guide</summary>'
             '<div style="margin-top:12px;font-size:13px;line-height:1.9;color:#333">'
             '<div style="background:#e6f4ea;border-left:4px solid #1a7f3c;padding:10px 14px;'
             'border-radius:0 6px 6px 0;margin-bottom:14px">'

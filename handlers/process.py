@@ -10,7 +10,7 @@ import threading
 import types
 
 import config as _config
-from config import WORKER_BOT_APP_ID
+from config import APP_ID, WORKER_BOT_APP_ID
 from services.approval import get_instance_detail
 from services.chat import create_group, send_process_notification
 from services.user_profile import get_user
@@ -157,7 +157,11 @@ def _do_run_process(instance_code: str, approval_code: str, source: str) -> None
         user_open_ids = list(dict.fromkeys(
             uid for uid in [*_config.WORKER_USER_IDS, applicant_id] if uid
         ))
-        bot_app_ids = [WORKER_BOT_APP_ID] if WORKER_BOT_APP_ID else []
+        # 用户身份建群时主应用 bot 不会被自动拉入，需显式加入 bot_id_list；
+        # 否则后续 send_process_notification（走主应用 SDK）会因 bot 不在群而失败。
+        bot_app_ids = list(dict.fromkeys(
+            bid for bid in [APP_ID, WORKER_BOT_APP_ID] if bid
+        ))
         try:
             chat_id = create_group(
                 group_name, user_open_ids, bot_app_ids,
